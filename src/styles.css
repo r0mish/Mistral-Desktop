@@ -177,7 +177,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 
 /* ---------------------------------------------------------------- messages */
 #messages { flex: 1; overflow-y: auto; scroll-behavior: auto; }
-.thread { max-width: 780px; margin: 0 auto; padding: 24px 24px 12px; }
+.thread { padding: 24px 32px 12px; }
 
 .welcome { max-width: 560px; margin: 18vh auto 0; text-align: center; padding: 0 24px; }
 .welcome h2 { font-size: 30px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.02em; }
@@ -270,10 +270,8 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .code-block code, .code-block .hljs { font-family: var(--mono); font-size: 13px; line-height: 1.55; background: transparent; padding: 0; }
 
 /* ---------------------------------------------------------------- composer */
-#composer-wrap { padding: 0 24px 10px; }
+#composer-wrap { padding: 0 32px 10px; }
 #composer {
-  max-width: 780px;
-  margin: 0 auto;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 18px;
@@ -390,6 +388,8 @@ code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 ::-webkit-scrollbar-track { background: transparent; }
 
 @media (max-width: 860px) {
+  .thread { padding: 20px 16px 12px; }
+  #composer-wrap { padding: 0 16px 10px; }
   #sidebar { position: absolute; z-index: 10; height: 100%; box-shadow: var(--shadow); }
   #app:not(.sidebar-hidden) #main::before { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.2); z-index: 5; }
   #hint { display: none; }

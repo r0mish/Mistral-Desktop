@@ -16,6 +16,18 @@ Client de bureau **léger, open source et sans télémétrie** pour l'API [Mistr
 - Historique local : recherche, renommage, suppression, regroupement par date ; modifier un message, régénérer une réponse
 - Choix du modèle par conversation, instructions système, température, tokens max, **export Markdown**
 
+### Projets
+Comme dans Claude Desktop : des conversations regroupées qui partagent des **consignes** et des **fichiers de référence** (texte, Markdown, code, CSV, PDF).
+- Sélecteur en haut de la barre latérale : filtre les conversations ; les nouvelles conversations sont rattachées au projet affiché
+- Une conversation peut changer de projet à tout moment (menu en haut de la fenêtre)
+- Consignes et fichiers sont ajoutés à l'invite système de chaque message du projet (estimation du nombre de tokens affichée) ; tout est stocké localement dans `projects/`
+
+### Dictée vocale
+Bouton micro dans la zone de saisie (`Ctrl/⌘+Maj+D`, `Échap` pour annuler) : capture native du micro, transcription par **Voxtral** (`voxtral-mini-latest`, modèle open-weight de Mistral), texte inséré au curseur.
+- Le son reste **en mémoire** (WAV mono 16 kHz, jamais écrit sur le disque), 15 min max
+- Langue configurable (français par défaut) ou détection automatique
+- **Serveur de transcription auto-hébergé** possible (toute API compatible `/v1/audio/transcriptions` : Voxtral via vLLM, Speaches/faster-whisper…) ; la clé Mistral n'est alors jamais transmise
+
 ### Recherche web
 Bascule **Web** dans la zone de saisie. Le modèle dispose alors de `web_search` et `fetch_url` et cite ses sources.
 - Fournisseur **Mistral** (connecteur `web_search` de l'API Conversations) ou **SearXNG** auto-hébergé
@@ -35,6 +47,7 @@ Un agent façon Claude Code, propulsé par Devstral, travaille dans un dossier d
 - Trois niveaux de permission par session : **Tout demander**, **Modifs auto** (les commandes restent soumises à approbation), **Autonome**
 - Accès **confiné au dossier choisi** via la boîte de dialogue native (chemins `..`, absolus et liens symboliques vers l'extérieur refusés)
 - Commandes non interactives, avec délai max configurable ; l'arrêt tue tout l'arbre de processus
+- **Fichiers de consignes** : `AGENTS.md` (standard ouvert), `MISTRAL.md` ou `CLAUDE.md` à la racine du projet sont lus automatiquement à chaque tâche, en local comme en SSH (indicateur dans la barre du haut). S'il n'y en a pas, l'agent peut le générer en analysant le dépôt
 - **Shell** : bash sous macOS/Linux. Sous Windows, **Git Bash** s'il est installé (les modèles écrivent naturellement du bash), sinon PowerShell 7, sinon Windows PowerShell 5.1 ; l'agent reçoit des consignes adaptées au shell détecté. Choix manuel dans Réglages → Code. Recommandé : installer [Git pour Windows](https://git-scm.com/download/win)
 
 ### Serveurs SSH distants
@@ -92,7 +105,7 @@ Configuration au **format de Claude Desktop** (Réglages → MCP) :
 - **Mises à jour** : détection des nouvelles releases GitHub, bandeau avec téléchargement direct de l'installateur adapté à votre système (désactivable)
 
 ### Raccourcis
-`Ctrl/⌘+N` nouvelle conversation · `Ctrl/⌘+1` / `2` Chat / Code · `Ctrl/⌘+K` recherche · `Ctrl/⌘+B` barre latérale · `Ctrl/⌘+,` réglages · `Échap` arrêter
+`Ctrl/⌘+N` nouvelle conversation · `Ctrl/⌘+1` / `2` Chat / Code · `Ctrl/⌘+K` recherche · `Ctrl/⌘+B` barre latérale · `Ctrl/⌘+,` réglages · `Ctrl/⌘+G` panneau Git · `Ctrl/⌘+Maj+D` dictée · `Échap` arrêter
 
 ## Vie privée et sécurité
 
@@ -104,14 +117,15 @@ Configuration au **format de Claude Desktop** (Réglages → MCP) :
 | Conversations | Fichiers JSON locaux, jamais synchronisés. |
 | WebView | CSP stricte (aucune ressource distante, donc aucun pixel de suivi), HTML assaini par DOMPurify, liens ouverts dans le navigateur du système. |
 | Agent de code | Dossiers autorisés uniquement via la boîte de dialogue native ou une connexion SSH validée ; écritures et commandes soumises à approbation par défaut. ⚠️ En mode **Autonome**, les commandes s'exécutent avec vos droits sans confirmation : à réserver aux projets de confiance (le contenu lu sur le web ou dans le dépôt peut tenter d'influencer le modèle). |
+| Dictée | Micro ouvert uniquement pendant l'enregistrement (indicateur rouge), audio gardé en mémoire puis envoyé pour transcription à l'API Mistral ou à votre serveur. macOS demande l'autorisation d'accès au micro au premier usage. |
 | MCP | `mcp.json` est stocké en clair dans le dossier de configuration : évitez d'y mettre des secrets sensibles, ou préférez des serveurs locaux. |
-| Auto-hébergement | URL d'API configurable : compatible avec un serveur OpenAI-like (vLLM, Ollama, llama.cpp…) servant les modèles open-weight de Mistral. HTTP en clair accepté seulement sur `localhost`. La recherche web via Mistral et l'OCR nécessitent l'API Mistral ; utilisez SearXNG et l'extraction PDF locale pour un fonctionnement 100 % local. |
+| Auto-hébergement | URL d'API configurable : compatible avec un serveur OpenAI-like (vLLM, Ollama, llama.cpp…) servant les modèles open-weight de Mistral. HTTP en clair accepté seulement sur `localhost`. La recherche web via Mistral et l'OCR nécessitent l'API Mistral ; utilisez SearXNG, l'extraction PDF locale et un serveur de transcription local pour un fonctionnement 100 % local. |
 
 Emplacements locaux :
 
 | OS | Données (conversations, dossiers autorisés) | Réglages (`settings.json`, `mcp.json`) |
 |---|---|---|
-| Linux | `~/.local/share/dev.r0mish.mistral-desktop/` | `~/.config/dev.r0mish.mistral-desktop/` |
+| Linux | `~/.local/share/dev.r0mish.mistral-desktop/` (+ `projects/`) | `~/.config/dev.r0mish.mistral-desktop/` |
 | macOS | `~/Library/Application Support/dev.r0mish.mistral-desktop/` | idem |
 | Windows | `%APPDATA%\dev.r0mish.mistral-desktop\` | idem |
 
@@ -133,9 +147,9 @@ Prérequis : [Rust](https://rustup.rs) stable, Node.js ≥ 20, et sous Linux :
 
 ```bash
 # Debian / Ubuntu
-sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev build-essential
+sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libasound2-dev build-essential
 # Fedora
-sudo dnf install webkit2gtk4.1-devel libappindicator-gtk3-devel librsvg2-devel openssl-devel
+sudo dnf install webkit2gtk4.1-devel libappindicator-gtk3-devel librsvg2-devel openssl-devel alsa-lib-devel
 ```
 
 ```bash
@@ -152,6 +166,9 @@ src/                    Interface (TypeScript, sans framework)
   agent.ts              Invites système, conversion API, politique d'approbation, cartes d'outils
   markdown.ts           marked + highlight.js + DOMPurify
   api.ts                Appels IPC typés vers Rust
+  projects-ui.ts        Projets (consignes, fichiers de référence)
+  dictation.ts          Dictée vocale
+  ssh-ui.ts, git-ui.ts  Serveurs SSH, panneau Git
 src-tauri/src/
   lib.rs                Commandes Tauri, trousseau, annulation, PDF
   mistral.rs            Client HTTP : chat en streaming + appels d'outils, recherche web, OCR
@@ -159,7 +176,10 @@ src-tauri/src/
   workspace.rs          Outils de code confinés au dossier de projet
   web.rs                SearXNG, lecture de pages (protection réseau local)
   mcp.rs                Client MCP stdio / HTTP, double génération de protocole
-  storage.rs            Stockage JSON atomique, export Markdown
+  storage.rs            Stockage JSON atomique (conversations, projets), export Markdown
+  audio.rs              Capture du micro (cpal), rééchantillonnage 16 kHz, WAV en mémoire
+  target.rs, ssh.rs     Dossier de projet local ou distant (OpenSSH), fichiers de consignes
+  git.rs, shell.rs      Git, choix du shell (bash, Git Bash, PowerShell)
 ```
 
 Tauri 2 utilise la WebView native de l'OS (WebKit, WebView2) : binaire d'environ 10-15 Mo, contre ~150 Mo pour une app Electron.

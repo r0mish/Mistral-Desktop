@@ -6,11 +6,13 @@ import {
   type ApiMessage,
   type Conversation,
   type ConversationSummary,
+  type InstructionFile,
   type Kind,
   type McpServerStatus,
   type Message,
   type ModelInfo,
   type PermissionMode,
+  type Project,
   type Risk,
   type Settings,
   type TextFile,
@@ -18,11 +20,13 @@ import {
   type ToolContext,
   type UpdateInfo,
 } from "./api";
-import { COMPACT_PROMPT, looksUnfinished, needsApproval, systemPrompt, toApiMessages, toolCardHtml, toolLabel } from "./agent";
+import { COMPACT_PROMPT, INIT_AGENTS_PROMPT, looksUnfinished, needsApproval, systemPrompt, toApiMessages, toolCardHtml, toolLabel } from "./agent";
 import { aggregate, contextTokens, conversationUsage, fmtCost, fmtDuration, fmtTokens, today } from "./usage";
 import { escapeHtml, renderMarkdown } from "./markdown";
 import { initSshUi, loadHosts, openSshDialog, parseRemote, workspaceLabel } from "./ssh-ui";
 import { initGitUi, scheduleGitRefresh, toggleGitPanel } from "./git-ui";
+import { findProject, initProjectsUi, loadProjects, openProjectDialog, projectChars, projectList } from "./projects-ui";
+import { cancelDictation, initDictation, toggleDictation } from "./dictation";
 import type { Platform } from "./agent";
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
@@ -54,6 +58,10 @@ const el = {
   usageInfo: $("#usage-info"),
   updateBanner: $("#update-banner"),
   gitBtn: $<HTMLButtonElement>("#git-btn"),
+  instrChip: $<HTMLButtonElement>("#instr-chip"),
+  projectSelect: $<HTMLSelectElement>("#project-select"),
+  projectEdit: $<HTMLButtonElement>("#project-edit"),
+  convProject: $<HTMLSelectElement>("#conv-project"),
 };
 
 const FALLBACK_MODELS = [
@@ -98,6 +106,7 @@ interface Draft {
   webSearch: boolean;
   mcp: boolean;
   permissionMode: PermissionMode;
+  projectId?: string;
 }
 
 const state = {
@@ -120,6 +129,10 @@ const state = {
   activity: null as Activity | null,
   lastRun: null as RunOutcome | null,
   update: null as UpdateInfo | null,
+  /** Projet affiché dans la barre latérale ("" = toutes les conversations). */
+  projectFilter: "",
+  /** Fichiers de consignes (AGENTS.md…) par dossier de projet. */
+  instructions: new Map<string, InstructionFile[]>(),
 };
 
 const uid = () => crypto.randomUUID();
@@ -136,6 +149,13 @@ function platformFor(conv: Conversation): Platform {
     remote: label,
   };
 }
+
+/** Invite système complète : consignes du dossier (AGENTS.md…) et projet inclus. */
+const sysPrompt = (conv: Conversation) =>
+  systemPrompt(conv, state.settings, platformFor(conv), {
+    instructions: conv.kind === "code" && conv.workspace ? state.instructions.get(conv.workspace) : undefined,
+    project: findProject(conv.projectId),
+  });
 
 // ---------------------------------------------------------------- utilitaires
 
@@ -221,8 +241,12 @@ function dayBucket(ts: number): string {
 function renderSidebar() {
   document.querySelectorAll<HTMLElement>(".mode-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.mode === state.mode));
   el.newChatLabel.textContent = state.mode === "code" ? "Nouvelle session de code" : "Nouvelle conversation";
+  renderProjectBar();
   const q = el.search.value.trim().toLowerCase();
-  const list = state.convs.filter((c) => c.kind === state.mode && (!q || c.title.toLowerCase().includes(q)));
+  const pf = state.projectFilter;
+  const list = state.convs.filter(
+    (c) => c.kind === state.mode && (!pf || c.projectId === pf) && (!q || c.title.toLowerCase().includes(q)),
+  );
   let html = "";
   let bucket = "";
   for (const c of list) {
@@ -232,7 +256,11 @@ function renderSidebar() {
       bucket = b;
     }
     const active = (c.id === state.current?.id ? " active" : "") + (state.busy && c.id === state.current?.id ? " running" : "");
-    const sub = c.workspace ? `<span class="conv-sub">${escapeHtml(workspaceLabel(c.workspace).name)}</span>` : "";
+    const subParts = [
+      c.workspace ? workspaceLabel(c.workspace).name : "",
+      !pf && c.projectId ? (findProject(c.projectId)?.name ?? "") : "",
+    ].filter(Boolean);
+    const sub = subParts.length ? `<span class="conv-sub">${escapeHtml(subParts.join(" · "))}</span>` : "";
     html += `<div class="conv${active}" data-id="${c.id}">
       <span class="conv-text"><span class="conv-title">${escapeHtml(c.title)}</span>${sub}</span>
       <span class="conv-actions">
@@ -241,8 +269,54 @@ function renderSidebar() {
       </span>
     </div>`;
   }
-  const empty = q ? "Aucun résultat" : state.mode === "code" ? "Aucune session de code" : "Aucune conversation";
+  const empty = q ? "Aucun résultat" : pf ? "Aucune conversation dans ce projet" : state.mode === "code" ? "Aucune session de code" : "Aucune conversation";
   el.convList.innerHTML = html || `<p class="empty-list">${empty}</p>`;
+}
+
+const projectOptions = (none: string) =>
+  `<option value="">${none}</option>` +
+  projectList()
+    .map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`)
+    .join("");
+
+function renderProjectBar() {
+  if (state.projectFilter && !findProject(state.projectFilter)) state.projectFilter = "";
+  el.projectSelect.innerHTML = projectOptions("Toutes les conversations") + '<option value="__new">＋ Nouveau projet…</option>';
+  el.projectSelect.value = state.projectFilter;
+  el.projectSelect.classList.toggle("on", !!state.projectFilter);
+  el.projectEdit.hidden = !state.projectFilter;
+}
+
+el.projectSelect.addEventListener("change", () => {
+  const v = el.projectSelect.value;
+  if (v === "__new") {
+    el.projectSelect.value = state.projectFilter;
+    return openProjectDialog(null);
+  }
+  state.projectFilter = v;
+  if (state.current && !state.busy && (state.current.projectId ?? "") !== v) return newChat();
+  if (!state.current) state.draft.projectId = v || undefined;
+  renderSidebar();
+  if (!state.current) renderConversation();
+});
+el.projectEdit.addEventListener("click", () => openProjectDialog(findProject(state.projectFilter)));
+el.convProject.addEventListener("change", () => setOpt("projectId", el.convProject.value || undefined));
+
+/** Après création, modification ou suppression d'un projet. */
+function onProjectChange(saved: Project | null, deletedId?: string) {
+  if (saved) {
+    state.projectFilter = saved.id;
+    if (!state.current) state.draft.projectId = saved.id;
+    toast(`Projet « ${saved.name} » enregistré`);
+  }
+  if (deletedId) {
+    if (state.projectFilter === deletedId) state.projectFilter = "";
+    if (state.draft.projectId === deletedId) state.draft.projectId = undefined;
+    toast("Projet supprimé");
+  }
+  renderSidebar();
+  if (state.current) renderChrome();
+  else renderConversation();
 }
 
 async function refreshConvs() {
@@ -349,6 +423,7 @@ function newChat() {
     webSearch: state.settings.webSearchDefault,
     mcp: true,
     permissionMode: "ask",
+    projectId: state.projectFilter || undefined,
   };
   state.selectedModel = defaultModelFor(state.mode);
   fillModelSelect(el.modelSelect, state.selectedModel);
@@ -368,6 +443,7 @@ const opts = () => {
     webSearch: c ? !!c.webSearch : state.draft.webSearch,
     mcp: c ? c.mcp !== false : state.draft.mcp,
     permissionMode: (c ? c.permissionMode : state.draft.permissionMode) ?? "ask",
+    projectId: c ? c.projectId : state.draft.projectId,
   };
 };
 
@@ -395,6 +471,14 @@ function renderChrome() {
     el.wsChip.querySelector("span")!.textContent = l.name;
     el.wsChip.title = l.remote ? `${l.detail}\nCliquer pour copier le chemin` : `${l.detail}\nCliquer pour ouvrir le dossier`;
     el.wsChip.classList.toggle("remote", l.remote);
+  }
+  renderInstrChip(o.kind === "code" ? o.workspace : undefined);
+  const projects = projectList();
+  el.convProject.hidden = projects.length === 0;
+  if (projects.length) {
+    el.convProject.innerHTML = projectOptions("Sans projet");
+    el.convProject.value = o.projectId && findProject(o.projectId) ? o.projectId : "";
+    el.convProject.classList.toggle("on", !!el.convProject.value);
   }
   if (o.kind !== "code" || !o.workspace) toggleGitPanel(false);
   if (o.kind === "code") scheduleGitRefresh(200);
@@ -426,6 +510,45 @@ el.wsChip.addEventListener("click", () => {
   } else {
     revealItemInDir(ws).catch((e) => toast(errMsg(e), true));
   }
+});
+
+const instrLoading = new Set<string>();
+
+/** (Re)lit les fichiers de consignes du dossier. */
+async function loadInstructions(ws: string): Promise<InstructionFile[]> {
+  instrLoading.add(ws);
+  try {
+    const files = await api.workspaceInstructions(ws).catch(() => [] as InstructionFile[]);
+    state.instructions.set(ws, files);
+    return files;
+  } finally {
+    instrLoading.delete(ws);
+    if (opts().kind === "code" && opts().workspace === ws) {
+      renderInstrChip(ws);
+      if (!state.current) renderWelcome();
+      else renderUsage();
+    }
+  }
+}
+
+function renderInstrChip(ws: string | undefined) {
+  const files = ws ? state.instructions.get(ws) : undefined;
+  if (ws && !files && !instrLoading.has(ws)) loadInstructions(ws);
+  el.instrChip.hidden = !files?.length;
+  if (!ws || !files?.length) return;
+  el.instrChip.querySelector("span")!.textContent = files.map((f) => f.name).join(" + ");
+  el.instrChip.title =
+    "Consignes du projet lues automatiquement par l'agent à chaque tâche :\n" +
+    files.map((f) => `• ${f.name} (${(f.content.length / 1024).toFixed(1)} Ko${f.truncated ? ", tronqué" : ""})`).join("\n") +
+    (parseRemote(ws) ? "" : "\nCliquer pour afficher le fichier");
+}
+
+el.instrChip.addEventListener("click", () => {
+  const ws = opts().workspace;
+  const f = ws ? state.instructions.get(ws)?.[0] : undefined;
+  if (!ws || !f || parseRemote(ws)) return;
+  const sep = ws.includes("\\") && !ws.includes("/") ? "\\" : "/";
+  revealItemInDir(`${ws.replace(/[\\/]$/, "")}${sep}${f.name}`).catch((e) => toast(errMsg(e), true));
 });
 
 function openRemoteWorkspace(ws: string) {
@@ -478,13 +601,41 @@ function renderWelcome() {
       ${cur
         ? `<div class="ws-current">${cur.remote ? icons.server : icons.folder}<div><strong>${escapeHtml(cur.name)}</strong><small>${escapeHtml(cur.detail)}</small></div><button class="btn-ghost sm" data-pick-ws>Dossier local</button><button class="btn-ghost sm" data-ssh>Serveur SSH</button></div>`
         : `<p class="row center"><button class="btn-primary" data-pick-ws>${icons.folder} Ouvrir un dossier</button><button class="btn-ghost" data-ssh>${icons.server} Serveur SSH…</button></p>`}
+      ${ws ? instrHint(ws) : ""}
+      ${projectBanner()}
       ${recent ? `<div class="ws-recent"><div class="group">Récents</div>${recent}</div>` : ""}
     </div>`;
     return;
   }
   const hour = new Date().getHours();
   const greet = hour < 6 || hour >= 18 ? "Bonsoir" : "Bonjour";
-  el.messages.innerHTML = `<div class="welcome"><h2>${greet} 👋</h2><p>Comment puis-je vous aider ?</p></div>`;
+  const p = findProject(state.draft.projectId);
+  el.messages.innerHTML = p
+    ? `<div class="welcome"><h2>${escapeHtml(p.name)}</h2><p>Nouvelle conversation dans ce projet.</p>${projectBanner()}</div>`
+    : `<div class="welcome"><h2>${greet} 👋</h2><p>Comment puis-je vous aider ?</p></div>`;
+}
+
+function instrHint(ws: string): string {
+  const files = state.instructions.get(ws);
+  if (!files) return "";
+  if (files.length) {
+    return `<p class="instr-hint">✓ Consignes chargées automatiquement : <strong>${files.map((f) => escapeHtml(f.name)).join(", ")}</strong></p>`;
+  }
+  return `<p class="instr-hint">Aucun fichier <code>AGENTS.md</code> : l'agent redécouvre le projet à chaque session.
+    <button class="btn-ghost sm" data-init-agents>Le faire générer par l'agent</button></p>`;
+}
+
+function projectBanner(): string {
+  const p = findProject(state.draft.projectId);
+  if (!p) return "";
+  const n = p.files.length;
+  const bits = [
+    p.instructions.trim() ? "consignes" : "",
+    n ? `${n} fichier${n > 1 ? "s" : ""} de référence` : "",
+    `≈ ${Math.round(projectChars(p) / 3.5).toLocaleString("fr-FR")} tokens de contexte`,
+  ].filter(Boolean);
+  return `<div class="project-banner">${icons.folder}<div><strong>Projet ${escapeHtml(p.name)}</strong><small>${bits.join(" · ")}</small></div>
+    <button class="btn-ghost sm" data-edit-project>Modifier</button></div>`;
 }
 
 function messageHtml(m: Message, next: Message | undefined): string {
@@ -604,6 +755,12 @@ el.messages.addEventListener("click", async (ev) => {
   if (t.closest("[data-open-settings]")) return openSettings();
   if (t.closest("[data-pick-ws]")) return chooseWorkspace();
   if (t.closest("[data-ssh]")) return openSshDialog();
+  if (t.closest("[data-edit-project]")) return openProjectDialog(findProject(opts().projectId));
+  if (t.closest("[data-init-agents]")) {
+    el.input.value = INIT_AGENTS_PROMPT;
+    autoGrow(el.input);
+    return el.input.focus();
+  }
   const wsItem = t.closest<HTMLElement>("[data-ws]");
   if (wsItem) {
     state.draft.workspace = wsItem.dataset.ws;
@@ -740,6 +897,7 @@ async function send() {
       permissionMode: o.permissionMode,
       webSearch: o.webSearch,
       mcp: o.mcp,
+      ...(o.projectId ? { projectId: o.projectId } : {}),
     };
   }
   state.current.messages.push({
@@ -818,7 +976,7 @@ function renderUsage() {
     return;
   }
   const model = state.busy ? c.model : state.selectedModel || c.model;
-  const ctx = contextTokens(c, () => toApiMessages(c, systemPrompt(c, state.settings, platformFor(c))));
+  const ctx = contextTokens(c, () => toApiMessages(c, sysPrompt(c)));
   const max = maxContext(model);
   const pct = max ? Math.min(100, Math.round((ctx.tokens / max) * 100)) : null;
   el.ctxMeter.hidden = false;
@@ -874,7 +1032,7 @@ function recordUsage(conv: Conversation, model: string, promptTokens: number, co
 /** Résume l'historique pour libérer le contexte ; les messages restent affichés. */
 async function compact(conv: Conversation) {
   setActivity("Compaction du contexte…", "résumé de l'historique par le modèle");
-  const messages: ApiMessage[] = toApiMessages(conv, systemPrompt(conv, state.settings, platformFor(conv)));
+  const messages: ApiMessage[] = toApiMessages(conv, sysPrompt(conv));
   if (messages[messages.length - 1]?.role === "tool") messages.push({ role: "assistant", content: "(Pause.)" });
   messages.push({ role: "user", content: COMPACT_PROMPT });
   let summary = "";
@@ -903,7 +1061,7 @@ const shouldCompact = (conv: Conversation) => {
   const max = maxContext(conv.model);
   if (!pctLimit || !max || conv.messages.length < 4) return false;
   if (conv.compaction && conv.compaction.upto >= conv.messages.length - 1) return false;
-  const ctx = contextTokens(conv, () => toApiMessages(conv, systemPrompt(conv, state.settings, platformFor(conv))));
+  const ctx = contextTokens(conv, () => toApiMessages(conv, sysPrompt(conv)));
   return ctx.tokens >= (max * pctLimit) / 100;
 };
 
@@ -913,7 +1071,7 @@ const shouldCompact = (conv: Conversation) => {
 async function streamTurn(conv: Conversation, msg: Message, tools: Awaited<ReturnType<typeof api.toolDefinitions>>): Promise<boolean> {
   const requestId = uid();
   if (state.busy) Object.assign(state.busy, { requestId, msgId: msg.id });
-  const messages = toApiMessages({ ...conv, messages: conv.messages.filter((m) => m !== msg) }, systemPrompt(conv, state.settings, platformFor(conv)));
+  const messages = toApiMessages({ ...conv, messages: conv.messages.filter((m) => m !== msg) }, sysPrompt(conv));
   setActivity("Envoi de la requête…", conv.model);
   let ok = true;
   try {
@@ -1085,6 +1243,12 @@ async function runAgent() {
   activityTimer = window.setInterval(renderActivity, 1000);
   updateComposerState();
   renderSidebar();
+
+  if (conv.kind === "code" && conv.workspace) {
+    // Relu à chaque tâche : l'agent ou l'utilisateur ont pu modifier AGENTS.md.
+    setActivity("Lecture des consignes du projet…", workspaceLabel(conv.workspace).name);
+    await loadInstructions(conv.workspace);
+  }
 
   let tools: Awaited<ReturnType<typeof api.toolDefinitions>> = [];
   try {
@@ -1386,6 +1550,9 @@ const s = {
   shell: $<HTMLSelectElement>("#s-shell"),
   shellWrap: $("#s-shell-wrap"),
   shellInfo: $("#s-shell-info"),
+  sttModel: $<HTMLInputElement>("#s-stt-model"),
+  sttLang: $<HTMLSelectElement>("#s-stt-lang"),
+  sttUrl: $<HTMLInputElement>("#s-stt-url"),
 };
 
 function renderShellInfo() {
@@ -1605,6 +1772,9 @@ async function openSettings(tab = "general") {
   s.updates.checked = st.checkUpdates;
   s.prices.value = pricesToText(st.prices ?? {});
   s.shell.value = st.shell ?? "auto";
+  s.sttModel.value = st.transcriptionModel ?? "";
+  s.sttLang.value = st.transcriptionLanguage ?? "fr";
+  s.sttUrl.value = st.transcriptionUrl ?? "";
   renderShellInfo();
   if (!s.updateStatus.textContent) s.updateStatus.textContent = `Version installée : ${state.platform.version}`;
   renderUsageTab();
@@ -1669,6 +1839,9 @@ $("#settings-form").addEventListener("submit", async (e) => {
     checkUpdates: s.updates.checked,
     prices: state.settings.prices,
     shell: s.shell.value as Settings["shell"],
+    transcriptionModel: s.sttModel.value.trim() || "voxtral-mini-latest",
+    transcriptionLanguage: s.sttLang.value,
+    transcriptionUrl: s.sttUrl.value.trim(),
   };
   try {
     next.prices = parsePrices(s.prices.value);
@@ -1737,10 +1910,15 @@ window.addEventListener("keydown", (e) => {
   } else if (mod && (e.key === "1" || e.key === "2")) {
     e.preventDefault();
     setMode(e.key === "1" ? "chat" : "code");
-  } else if (e.key === "Escape" && el.settings.open) {
+  } else if (mod && e.shiftKey && k === "d") {
+    e.preventDefault();
+    toggleDictation();
+  } else if (e.key === "Escape" && document.querySelector("dialog[open]")) {
     // WebKitGTK ne ferme pas toujours le <dialog> natif avec Échap.
     e.preventDefault();
-    el.settings.close();
+    document.querySelector<HTMLDialogElement>("dialog[open]")!.close();
+  } else if (e.key === "Escape" && cancelDictation()) {
+    e.preventDefault();
   } else if (e.key === "Escape" && state.busy) {
     stop();
   }
@@ -1759,7 +1937,10 @@ async function init() {
   state.platform = await api.platform().catch(() => state.platform);
   state.workspaces = await api.listWorkspaces().catch(() => []);
   await loadHosts();
+  await loadProjects();
   initSshUi({ onOpen: openRemoteWorkspace, toast });
+  initProjectsUi({ onChange: onProjectChange, toast });
+  initDictation({ input: el.input, toast });
   initGitUi({
     workspace: () => (opts().kind === "code" ? opts().workspace : undefined),
     model: () => state.selectedModel || state.settings.codeModel,

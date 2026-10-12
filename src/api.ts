@@ -23,6 +23,11 @@ export interface Settings {
   shell: "auto" | "bash" | "pwsh" | "powershell";
   /** $ par million de tokens : préfixe de modèle → [entrée, sortie]. */
   prices: Record<string, [number, number]>;
+  transcriptionModel: string;
+  /** Code langue ISO (« fr »…) ; vide = détection automatique. */
+  transcriptionLanguage: string;
+  /** Serveur de transcription dédié (vide = API Mistral). */
+  transcriptionUrl: string;
 }
 
 export interface ModelInfo {
@@ -96,6 +101,7 @@ export interface Conversation {
   compaction?: Compaction;
   /** Consommation hors messages (compactions), par modèle. */
   extraUsage?: Record<string, Usage>;
+  projectId?: string;
 }
 
 export interface ConversationSummary {
@@ -104,6 +110,27 @@ export interface ConversationSummary {
   updatedAt: number;
   kind: Kind;
   workspace: string | null;
+  projectId: string | null;
+}
+
+export interface ProjectFile {
+  name: string;
+  text: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  instructions: string;
+  files: ProjectFile[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface InstructionFile {
+  name: string;
+  content: string;
+  truncated: boolean;
 }
 
 export interface KeyStatus {
@@ -254,6 +281,19 @@ export const api = {
   gitCheckout: (workspace: string, branch: string, create: boolean) => invoke<void>("git_checkout", { workspace, branch, create }),
   gitLog: (workspace: string, count: number) => invoke<GitCommit[]>("git_log", { workspace, count }),
   gitInit: (workspace: string) => invoke<void>("git_init", { workspace }),
+
+  workspaceInstructions: (workspace: string) => invoke<InstructionFile[]>("workspace_instructions", { workspace }),
+
+  listProjects: () => invoke<Project[]>("list_projects"),
+  saveProject: (project: Project) => invoke<void>("save_project", { project }),
+  deleteProject: (id: string) => invoke<void>("delete_project", { id }),
+
+  dictationStart(onLevel: (level: number) => void): Promise<void> {
+    const channel = new Channel<number>();
+    channel.onmessage = onLevel;
+    return invoke<void>("dictation_start", { onLevel: channel });
+  },
+  dictationStop: (transcribe: boolean) => invoke<string | null>("dictation_stop", { transcribe }),
 
   toolDefinitions: (ctx: ToolContext) => invoke<ToolDef[]>("tool_definitions", { ctx }),
   previewTool: (ctx: ToolContext, name: string, args: string) =>

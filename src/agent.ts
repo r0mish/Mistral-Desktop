@@ -1,6 +1,6 @@
 // Logique « agent » indépendante du DOM : invites système, conversion vers l'API,
 // politique d'approbation et rendu des cartes d'outils.
-import type { ApiMessage, Conversation, PermissionMode, Risk, Settings, ToolCallRec } from "./api";
+import type { ApiMessage, Conversation, InstructionFile, PermissionMode, Project, Risk, Settings, ToolCallRec } from "./api";
 import { escapeHtml } from "./markdown";
 
 const today = () =>
@@ -39,14 +39,48 @@ const WEB_PROMPT = () =>
   `Utilise-les pour toute information récente, chiffrée ou dont tu n'es pas sûr, puis cite tes sources sous forme de liens Markdown [titre](url). ` +
   `Date du jour : ${today()}.`;
 
-export function systemPrompt(conv: Conversation, settings: Settings, platform: Platform): string {
+/** Contexte additionnel : consignes du dossier (AGENTS.md…) et projet de la conversation. */
+export interface PromptExtras {
+  instructions?: InstructionFile[];
+  project?: Project | null;
+}
+
+export function instructionsPrompt(files: InstructionFile[]): string {
+  if (!files.length) return "";
+  const body = files.map((f) => `<instructions file="${f.name}">\n${f.content}\n</instructions>`).join("\n\n");
+  return `Project instructions, loaded automatically from the project root. Follow them: they take precedence over your defaults (but not over the user's explicit requests). Sub-directories may contain their own AGENTS.md: read it before working there.\n\n${body}`;
+}
+
+export function projectPrompt(p: Project): string {
+  const parts = [`Cette conversation fait partie du projet « ${p.name} ».`];
+  if (p.instructions.trim()) parts.push(`Consignes du projet :\n${p.instructions.trim()}`);
+  if (p.files.length) {
+    parts.push(
+      "Fichiers de référence du projet (base de connaissances : appuie-toi dessus et cite le nom du fichier quand tu t'en sers) :\n\n" +
+        p.files.map((f) => `<fichier nom="${f.name}">\n${f.text}\n</fichier>`).join("\n\n"),
+    );
+  }
+  return parts.join("\n\n");
+}
+
+export function systemPrompt(conv: Conversation, settings: Settings, platform: Platform, extras: PromptExtras = {}): string {
   const parts: string[] = [];
-  if (conv.kind === "code" && conv.workspace) parts.push(codeSystemPrompt(conv.workspace, platform));
+  if (conv.kind === "code" && conv.workspace) {
+    parts.push(codeSystemPrompt(conv.workspace, platform));
+    const instr = instructionsPrompt(extras.instructions ?? []);
+    if (instr) parts.push(instr);
+  }
+  if (extras.project) parts.push(projectPrompt(extras.project));
   const user = (conv.systemPrompt ?? settings.systemPrompt)?.trim();
   if (user) parts.push(user);
   if (conv.webSearch) parts.push(WEB_PROMPT());
   return parts.join("\n\n");
 }
+
+export const INIT_AGENTS_PROMPT =
+  "Analyse ce projet (structure, langages, outils de build, tests, conventions) puis crée à la racine un fichier AGENTS.md concis destiné aux agents de code : " +
+  "présentation en quelques lignes, commandes pour installer, compiler, lancer les tests et le linter, conventions de code et d'architecture à respecter, pièges connus. " +
+  "N'invente rien : uniquement ce que tu as vérifié dans le dépôt.";
 
 /** Au-delà de ces derniers tours d'outils, les anciens résultats sont tronqués dans les requêtes. */
 const KEEP_FULL_TOOL_TURNS = 8;

@@ -16,11 +16,11 @@ use crate::shell::Shell;
 
 type R<T> = Result<T, String>;
 
-const MAX_READ_BYTES: u64 = 5 * 1024 * 1024;
+pub const MAX_READ_BYTES: u64 = 5 * 1024 * 1024;
 const DEFAULT_READ_LINES: usize = 2000;
 const MAX_LINE_CHARS: usize = 2000;
-const MAX_LIST_ENTRIES: usize = 500;
-const MAX_SEARCH_MATCHES: usize = 200;
+pub const MAX_LIST_ENTRIES: usize = 500;
+pub const MAX_SEARCH_MATCHES: usize = 200;
 const MAX_OUTPUT_CHARS: usize = 30_000;
 
 /// Retire le préfixe « verbatim » `\\?\` que `canonicalize()` ajoute sous Windows :
@@ -129,10 +129,15 @@ pub fn read_file(root: &Path, path: &str, offset: Option<usize>, limit: Option<u
         return Err(format!("{path} est trop volumineux ({} Mo)", meta.len() / 1_048_576));
     }
     let bytes = fs::read(&p).map_err(|e| e.to_string())?;
+    number_lines(path, &bytes, offset, limit)
+}
+
+/// Contenu numéroté (numéro<TAB>ligne), avec pagination ; partagé avec les dossiers distants.
+pub fn number_lines(path: &str, bytes: &[u8], offset: Option<usize>, limit: Option<usize>) -> R<String> {
     if bytes.iter().take(8000).any(|&b| b == 0) {
         return Err(format!("{path} est un fichier binaire"));
     }
-    let text = String::from_utf8_lossy(&bytes);
+    let text = String::from_utf8_lossy(bytes);
     let start = offset.unwrap_or(1).max(1);
     let limit = limit.unwrap_or(DEFAULT_READ_LINES).clamp(1, DEFAULT_READ_LINES);
     let total = text.lines().count();
@@ -209,7 +214,7 @@ pub fn unified_diff(path: &str, old: &str, new: &str) -> String {
 }
 
 /// Contenu après remplacement, ou erreur si `old` est absent / ambigu.
-fn apply_edit(current: &str, old: &str, new: &str, replace_all: bool) -> R<String> {
+pub fn apply_edit(current: &str, old: &str, new: &str, replace_all: bool) -> R<String> {
     if old.is_empty() {
         return Err("old_string ne peut pas être vide (utilisez write_file pour créer un fichier)".into());
     }
@@ -264,7 +269,7 @@ pub fn edit_file(root: &Path, path: &str, old: &str, new: &str, replace_all: boo
     Ok((format!("Fichier {path} modifié."), unified_diff(path, &current, &updated)))
 }
 
-fn truncate_middle(s: &str, max: usize) -> String {
+pub fn truncate_middle(s: &str, max: usize) -> String {
     let n = s.chars().count();
     if n <= max {
         return s.to_owned();
@@ -350,17 +355,21 @@ pub async fn run_command(root: &Path, shell: &Shell, command: &str, timeout_secs
         }
     };
     let status = status.map_err(|e| e.to_string())?;
-    let mut out = String::from_utf8_lossy(&o).into_owned();
-    let err = String::from_utf8_lossy(&e);
-    if !err.trim().is_empty() {
+    Ok(format_output(status.code(), &o, &String::from_utf8_lossy(&e)))
+}
+
+/// Résultat d'une commande pour le modèle : code de sortie puis sorties fusionnées (tronquées).
+pub fn format_output(code: Option<i32>, stdout: &[u8], stderr: &str) -> String {
+    let mut out = String::from_utf8_lossy(stdout).into_owned();
+    if !stderr.trim().is_empty() {
         if !out.is_empty() && !out.ends_with('\n') {
             out.push('\n');
         }
-        out.push_str(&err);
+        out.push_str(stderr);
     }
     let out = truncate_middle(out.trim_end(), MAX_OUTPUT_CHARS);
-    let code = status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
-    Ok(format!("Code de sortie : {code}\n{}", if out.is_empty() { "(aucune sortie)".into() } else { out }))
+    let code = code.map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
+    format!("Code de sortie : {code}\n{}", if out.is_empty() { "(aucune sortie)".into() } else { out })
 }
 
 #[cfg(test)]

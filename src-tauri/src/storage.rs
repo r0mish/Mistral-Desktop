@@ -317,6 +317,22 @@ pub fn record_usage(app: &AppHandle, day: &str, model: &str, prompt: u64, comple
     write_json(&usage_path(app)?, &log)
 }
 
+fn ssh_hosts_path(app: &AppHandle) -> R<PathBuf> {
+    Ok(ensure_dir(app.path().app_config_dir().map_err(|e| e.to_string())?)?.join("ssh_hosts.json"))
+}
+
+pub fn load_ssh_hosts(app: &AppHandle) -> Vec<crate::ssh::SshHost> {
+    ssh_hosts_path(app)
+        .ok()
+        .and_then(|p| fs::read(p).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_ssh_hosts(app: &AppHandle, hosts: &[crate::ssh::SshHost]) -> R<()> {
+    write_json(&ssh_hosts_path(app)?, &hosts)
+}
+
 fn mcp_path(app: &AppHandle) -> R<PathBuf> {
     Ok(ensure_dir(app.path().app_config_dir().map_err(|e| e.to_string())?)?.join("mcp.json"))
 }

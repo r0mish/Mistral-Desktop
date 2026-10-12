@@ -1,6 +1,6 @@
 [package]
 name = "mistral-desktop"
-version = "0.3.1"
+version = "0.4.0"
 description = "Client de bureau léger et respectueux de la vie privée pour l'API Mistral AI"
 authors = ["r0mish"]
 license = "MIT"

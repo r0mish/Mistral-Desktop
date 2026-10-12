@@ -21,6 +21,9 @@ import {
 import { COMPACT_PROMPT, looksUnfinished, needsApproval, systemPrompt, toApiMessages, toolCardHtml, toolLabel } from "./agent";
 import { aggregate, contextTokens, conversationUsage, fmtCost, fmtDuration, fmtTokens, today } from "./usage";
 import { escapeHtml, renderMarkdown } from "./markdown";
+import { initSshUi, loadHosts, openSshDialog, parseRemote, workspaceLabel } from "./ssh-ui";
+import { initGitUi, scheduleGitRefresh, toggleGitPanel } from "./git-ui";
+import type { Platform } from "./agent";
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
@@ -50,6 +53,7 @@ const el = {
   ctxMeter: $<HTMLButtonElement>("#ctx-meter"),
   usageInfo: $("#usage-info"),
   updateBanner: $("#update-banner"),
+  gitBtn: $<HTMLButtonElement>("#git-btn"),
 };
 
 const FALLBACK_MODELS = [
@@ -119,7 +123,19 @@ const state = {
 };
 
 const uid = () => crypto.randomUUID();
-const basename = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+
+/** Plateforme vue par l'agent : la machine locale, ou le serveur SSH du dossier de projet. */
+function platformFor(conv: Conversation): Platform {
+  const r = conv.kind === "code" ? parseRemote(conv.workspace) : null;
+  if (!r) return state.platform;
+  const label = r.host ? `${r.host.label} (${r.host.user ? `${r.host.user}@` : ""}${r.host.host})` : "serveur distant";
+  return {
+    os: r.host?.system || "Linux/Unix (distant)",
+    shell: "bash (ou sh) sur le serveur distant, via SSH",
+    shellGuidance: "Use POSIX/bash syntax. Be careful: this may be a production server — never restart services, change system configuration or delete data unless explicitly asked.",
+    remote: label,
+  };
+}
 
 // ---------------------------------------------------------------- utilitaires
 
@@ -155,6 +171,7 @@ const icons = {
   trash: '<svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>',
   file: '<svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>',
   folder: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  server: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>',
 };
 
 // ---------------------------------------------------------------- modèles
@@ -215,7 +232,7 @@ function renderSidebar() {
       bucket = b;
     }
     const active = (c.id === state.current?.id ? " active" : "") + (state.busy && c.id === state.current?.id ? " running" : "");
-    const sub = c.workspace ? `<span class="conv-sub">${escapeHtml(basename(c.workspace))}</span>` : "";
+    const sub = c.workspace ? `<span class="conv-sub">${escapeHtml(workspaceLabel(c.workspace).name)}</span>` : "";
     html += `<div class="conv${active}" data-id="${c.id}">
       <span class="conv-text"><span class="conv-title">${escapeHtml(c.title)}</span>${sub}</span>
       <span class="conv-actions">
@@ -374,9 +391,14 @@ function renderChrome() {
   el.exportBtn.hidden = !c;
   el.wsChip.hidden = o.kind !== "code" || !o.workspace;
   if (o.workspace) {
-    el.wsChip.querySelector("span")!.textContent = basename(o.workspace);
-    el.wsChip.title = o.workspace;
+    const l = workspaceLabel(o.workspace);
+    el.wsChip.querySelector("span")!.textContent = l.name;
+    el.wsChip.title = l.remote ? `${l.detail}\nCliquer pour copier le chemin` : `${l.detail}\nCliquer pour ouvrir le dossier`;
+    el.wsChip.classList.toggle("remote", l.remote);
   }
+  if (o.kind !== "code" || !o.workspace) toggleGitPanel(false);
+  if (o.kind === "code") scheduleGitRefresh(200);
+  else el.gitBtn.hidden = true;
   el.permSelect.hidden = o.kind !== "code";
   el.permSelect.value = o.permissionMode;
   el.webToggle.classList.toggle("on", o.webSearch);
@@ -396,8 +418,23 @@ el.mcpToggle.addEventListener("click", () => setOpt("mcp", !opts().mcp));
 el.permSelect.addEventListener("change", () => setOpt("permissionMode", el.permSelect.value as PermissionMode));
 el.wsChip.addEventListener("click", () => {
   const ws = opts().workspace;
-  if (ws) revealItemInDir(ws).catch((e) => toast(errMsg(e), true));
+  if (!ws) return;
+  const r = parseRemote(ws);
+  if (r) {
+    copy(r.path);
+    toast(`Chemin copié : ${r.path}`);
+  } else {
+    revealItemInDir(ws).catch((e) => toast(errMsg(e), true));
+  }
 });
+
+function openRemoteWorkspace(ws: string) {
+  api.listWorkspaces().then((w) => (state.workspaces = w)).catch(() => {});
+  if (state.current) newChat();
+  state.draft.workspace = ws;
+  renderConversation();
+  el.input.focus();
+}
 
 async function chooseWorkspace() {
   try {
@@ -428,15 +465,19 @@ function renderWelcome() {
     const ws = state.draft.workspace;
     const recent = state.workspaces
       .filter((w) => w !== ws)
-      .slice(0, 6)
-      .map((w) => `<button class="ws-item" data-ws="${escapeHtml(w)}" title="${escapeHtml(w)}">${icons.folder}<span>${escapeHtml(basename(w))}</span><small>${escapeHtml(w)}</small></button>`)
+      .slice(0, 8)
+      .map((w) => {
+        const l = workspaceLabel(w);
+        return `<button class="ws-item" data-ws="${escapeHtml(w)}" title="${escapeHtml(l.detail)}">${l.remote ? icons.server : icons.folder}<span>${escapeHtml(l.name)}</span><small>${escapeHtml(l.detail)}</small></button>`;
+      })
       .join("");
+    const cur = ws ? workspaceLabel(ws) : null;
     el.messages.innerHTML = `<div class="welcome code">
       <h2>Agent de code</h2>
-      <p>L'agent explore, modifie et teste le code d'un dossier de votre machine. Chaque modification et commande peut être soumise à votre approbation.</p>
-      ${ws
-        ? `<div class="ws-current">${icons.folder}<div><strong>${escapeHtml(basename(ws))}</strong><small>${escapeHtml(ws)}</small></div><button class="btn-ghost sm" data-pick-ws>Changer</button></div>`
-        : `<p><button class="btn-primary" data-pick-ws>${icons.folder} Ouvrir un dossier</button></p>`}
+      <p>L'agent explore, modifie et teste le code d'un dossier de votre machine ou d'un serveur SSH. Chaque modification et commande peut être soumise à votre approbation.</p>
+      ${cur
+        ? `<div class="ws-current">${cur.remote ? icons.server : icons.folder}<div><strong>${escapeHtml(cur.name)}</strong><small>${escapeHtml(cur.detail)}</small></div><button class="btn-ghost sm" data-pick-ws>Dossier local</button><button class="btn-ghost sm" data-ssh>Serveur SSH</button></div>`
+        : `<p class="row center"><button class="btn-primary" data-pick-ws>${icons.folder} Ouvrir un dossier</button><button class="btn-ghost" data-ssh>${icons.server} Serveur SSH…</button></p>`}
       ${recent ? `<div class="ws-recent"><div class="group">Récents</div>${recent}</div>` : ""}
     </div>`;
     return;
@@ -562,6 +603,7 @@ el.messages.addEventListener("click", async (ev) => {
   const t = ev.target as HTMLElement;
   if (t.closest("[data-open-settings]")) return openSettings();
   if (t.closest("[data-pick-ws]")) return chooseWorkspace();
+  if (t.closest("[data-ssh]")) return openSshDialog();
   const wsItem = t.closest<HTMLElement>("[data-ws]");
   if (wsItem) {
     state.draft.workspace = wsItem.dataset.ws;
@@ -776,7 +818,7 @@ function renderUsage() {
     return;
   }
   const model = state.busy ? c.model : state.selectedModel || c.model;
-  const ctx = contextTokens(c, () => toApiMessages(c, systemPrompt(c, state.settings, state.platform)));
+  const ctx = contextTokens(c, () => toApiMessages(c, systemPrompt(c, state.settings, platformFor(c))));
   const max = maxContext(model);
   const pct = max ? Math.min(100, Math.round((ctx.tokens / max) * 100)) : null;
   el.ctxMeter.hidden = false;
@@ -832,7 +874,7 @@ function recordUsage(conv: Conversation, model: string, promptTokens: number, co
 /** Résume l'historique pour libérer le contexte ; les messages restent affichés. */
 async function compact(conv: Conversation) {
   setActivity("Compaction du contexte…", "résumé de l'historique par le modèle");
-  const messages: ApiMessage[] = toApiMessages(conv, systemPrompt(conv, state.settings, state.platform));
+  const messages: ApiMessage[] = toApiMessages(conv, systemPrompt(conv, state.settings, platformFor(conv)));
   if (messages[messages.length - 1]?.role === "tool") messages.push({ role: "assistant", content: "(Pause.)" });
   messages.push({ role: "user", content: COMPACT_PROMPT });
   let summary = "";
@@ -861,7 +903,7 @@ const shouldCompact = (conv: Conversation) => {
   const max = maxContext(conv.model);
   if (!pctLimit || !max || conv.messages.length < 4) return false;
   if (conv.compaction && conv.compaction.upto >= conv.messages.length - 1) return false;
-  const ctx = contextTokens(conv, () => toApiMessages(conv, systemPrompt(conv, state.settings, state.platform)));
+  const ctx = contextTokens(conv, () => toApiMessages(conv, systemPrompt(conv, state.settings, platformFor(conv))));
   return ctx.tokens >= (max * pctLimit) / 100;
 };
 
@@ -871,7 +913,7 @@ const shouldCompact = (conv: Conversation) => {
 async function streamTurn(conv: Conversation, msg: Message, tools: Awaited<ReturnType<typeof api.toolDefinitions>>): Promise<boolean> {
   const requestId = uid();
   if (state.busy) Object.assign(state.busy, { requestId, msgId: msg.id });
-  const messages = toApiMessages({ ...conv, messages: conv.messages.filter((m) => m !== msg) }, systemPrompt(conv, state.settings, state.platform));
+  const messages = toApiMessages({ ...conv, messages: conv.messages.filter((m) => m !== msg) }, systemPrompt(conv, state.settings, platformFor(conv)));
   setActivity("Envoi de la requête…", conv.model);
   let ok = true;
   try {
@@ -1019,6 +1061,7 @@ async function runToolCalls(conv: Conversation, msg: Message): Promise<"ok" | "d
   }
   await saveCurrent();
   renderUsage();
+  if (conv.kind === "code") scheduleGitRefresh();
   return state.busy?.stopped ? "stopped" : "ok";
 }
 
@@ -1688,6 +1731,9 @@ window.addEventListener("keydown", (e) => {
   } else if (mod && k === "k") {
     e.preventDefault();
     el.search.focus();
+  } else if (mod && k === "g" && opts().kind === "code" && opts().workspace) {
+    e.preventDefault();
+    toggleGitPanel();
   } else if (mod && (e.key === "1" || e.key === "2")) {
     e.preventDefault();
     setMode(e.key === "1" ? "chat" : "code");
@@ -1712,6 +1758,23 @@ async function init() {
   applyTheme(state.settings.theme);
   state.platform = await api.platform().catch(() => state.platform);
   state.workspaces = await api.listWorkspaces().catch(() => []);
+  await loadHosts();
+  initSshUi({ onOpen: openRemoteWorkspace, toast });
+  initGitUi({
+    workspace: () => (opts().kind === "code" ? opts().workspace : undefined),
+    model: () => state.selectedModel || state.settings.codeModel,
+    toast,
+    recordUsage: (model, p, c) => {
+      api.recordUsage(today(), model, p, c).catch(() => {});
+      if (state.current) {
+        state.current.extraUsage ??= {};
+        const u = (state.current.extraUsage[model] ??= { promptTokens: 0, completionTokens: 0 });
+        u.promptTokens += p;
+        u.completionTokens += c;
+        renderUsage();
+      }
+    },
+  });
   await refreshKeyStatus();
   newChat();
   await refreshConvs().catch((e) => toast(errMsg(e), true));

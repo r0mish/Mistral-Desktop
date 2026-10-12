@@ -44,6 +44,10 @@
             <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>
             <span></span>
           </button>
+          <button id="git-btn" class="chip-btn git-btn" title="Git (Ctrl+G)" hidden>
+            <svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><circle cx="18" cy="8" r="2.5" /><path d="M6 8.5v7M18 10.5c0 4-6 3-10.5 6" /></svg>
+            <span>git</span>
+          </button>
           <select id="perm-select" title="Permissions de l'agent" hidden>
             <option value="ask">Tout demander</option>
             <option value="acceptEdits">Modifs auto</option>
@@ -85,6 +89,35 @@
           <p class="disclaimer">Les réponses peuvent contenir des erreurs. Conversations stockées uniquement sur cet appareil.</p>
         </footer>
         <div id="drop-overlay" hidden>Déposez vos fichiers ici</div>
+
+        <aside id="git-panel" hidden>
+          <header class="git-head">
+            <strong>Git</strong>
+            <select id="git-branch" title="Changer de branche"></select>
+            <input id="git-new-branch" placeholder="nom-de-branche (Entrée)" spellcheck="false" hidden />
+            <span class="spacer"></span>
+            <button type="button" class="icon-btn sm" id="git-refresh" title="Actualiser">
+              <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg>
+            </button>
+            <button type="button" class="icon-btn sm" id="git-close" title="Fermer">×</button>
+          </header>
+          <div class="git-sync">
+            <button type="button" class="btn-ghost sm" data-git-sync="fetch" title="git fetch --prune">Récupérer</button>
+            <button type="button" class="btn-ghost sm" data-git-sync="pull" title="git pull --ff-only">Tirer <span id="git-behind"></span></button>
+            <button type="button" class="btn-ghost sm" data-git-sync="push" title="git push">Pousser <span id="git-ahead"></span></button>
+            <span id="git-upstream" class="muted small"></span>
+          </div>
+          <div id="git-body"></div>
+          <div id="git-diff" hidden></div>
+          <div class="git-commit">
+            <textarea id="git-message" rows="3" placeholder="Message de commit"></textarea>
+            <div class="row end">
+              <button type="button" class="btn-ghost sm" id="git-generate" title="Rédiger le message à partir du diff indexé">✨ Générer</button>
+              <button type="button" class="btn-primary sm" id="git-commit">Commit</button>
+            </div>
+          </div>
+          <details id="git-history"><summary>Historique</summary><ul id="git-log"></ul></details>
+        </aside>
       </main>
     </div>
 
@@ -267,6 +300,47 @@
           <button type="submit" id="settings-save" class="btn-primary">Enregistrer</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="ssh-dialog">
+      <div class="ssh-layout">
+        <aside class="ssh-hosts">
+          <div class="group">Serveurs SSH</div>
+          <div id="ssh-host-list"></div>
+          <button type="button" class="btn-ghost sm" id="ssh-new">+ Nouveau serveur</button>
+        </aside>
+        <section class="ssh-main">
+          <div class="settings-head">
+            <h2 id="ssh-title">Nouveau serveur</h2>
+            <button type="button" class="icon-btn" id="ssh-close" title="Fermer">×</button>
+          </div>
+          <form id="ssh-form" autocomplete="off">
+            <div class="grid2">
+              <label>Nom affiché <input id="ssh-label" placeholder="Serveur web prod" /></label>
+              <label>Hôte <input id="ssh-host" placeholder="alias ~/.ssh/config, nom ou IP" spellcheck="false" required /></label>
+              <label>Utilisateur <input id="ssh-user" placeholder="par défaut : config SSH" spellcheck="false" /></label>
+              <label>Port <input id="ssh-port" type="number" min="1" max="65535" placeholder="22" /></label>
+            </div>
+            <label>Clé privée (facultatif) <input id="ssh-key" placeholder="~/.ssh/id_ed25519 — sinon agent SSH" spellcheck="false" /></label>
+            <p class="muted small">Utilise le client OpenSSH du système : vos alias, <code>ProxyJump</code> et clés de <code>~/.ssh/config</code> s'appliquent. Authentification par clé ou agent SSH uniquement (pas de mot de passe).</p>
+            <div class="row end">
+              <button type="button" class="btn-ghost sm danger" id="ssh-delete" hidden>Supprimer</button>
+              <button type="submit" class="btn-primary sm" id="ssh-test">Se connecter</button>
+            </div>
+          </form>
+          <div id="ssh-result"></div>
+          <div id="ssh-browser" hidden>
+            <div class="row">
+              <input id="ssh-path" spellcheck="false" />
+              <button type="button" class="btn-ghost sm" id="ssh-go">Aller</button>
+            </div>
+            <div id="ssh-dirs"></div>
+            <div class="row end">
+              <button type="button" class="btn-primary" id="ssh-open">Ouvrir ce dossier</button>
+            </div>
+          </div>
+        </section>
+      </div>
     </dialog>
 
     <div id="toast" hidden></div>

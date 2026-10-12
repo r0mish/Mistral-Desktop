@@ -166,6 +166,50 @@ export interface UpdateInfo {
   notes: string;
 }
 
+export interface SshHost {
+  id: string;
+  label: string;
+  host: string;
+  port?: number | null;
+  user?: string | null;
+  identityFile?: string | null;
+  system?: string | null;
+}
+
+export interface SshTestResult {
+  ok: boolean;
+  error: string | null;
+  needsTrust: boolean;
+  fingerprints: string[];
+  system: string | null;
+  user: string | null;
+  home: string | null;
+  git: string | null;
+}
+
+export interface GitFile {
+  path: string;
+  origPath: string | null;
+  index: string;
+  worktree: string;
+}
+
+export interface GitStatus {
+  isRepo: boolean;
+  branch: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  files: GitFile[];
+}
+
+export interface GitCommit {
+  hash: string;
+  author: string;
+  date: string;
+  subject: string;
+}
+
 /** jour → modèle → [entrée, sortie, requêtes] */
 export type UsageLog = Record<string, Record<string, [number, number, number]>>;
 
@@ -189,6 +233,27 @@ export const api = {
     invoke<void>("record_usage", { day, model, promptTokens, completionTokens }),
   getUsage: () => invoke<UsageLog>("get_usage"),
   checkUpdate: () => invoke<UpdateInfo>("check_update"),
+
+  sshHosts: () => invoke<SshHost[]>("ssh_hosts"),
+  sshSaveHost: (host: SshHost) => invoke<SshHost>("ssh_save_host", { host }),
+  sshDeleteHost: (id: string) => invoke<void>("ssh_delete_host", { id }),
+  sshTest: (host: SshHost) => invoke<SshTestResult>("ssh_test", { host }),
+  sshTrust: (host: SshHost) => invoke<void>("ssh_trust", { host }),
+  sshListDirs: (hostId: string, path: string) => invoke<{ path: string; dirs: string[] }>("ssh_list_dirs", { hostId, path }),
+  sshOpenWorkspace: (hostId: string, path: string) => invoke<string>("ssh_open_workspace", { hostId, path }),
+
+  gitStatus: (workspace: string) => invoke<GitStatus>("git_status", { workspace }),
+  gitDiff: (workspace: string, path: string | null, staged: boolean, untracked: boolean) =>
+    invoke<string>("git_diff", { workspace, path, staged, untracked }),
+  gitStage: (workspace: string, paths: string[]) => invoke<void>("git_stage", { workspace, paths }),
+  gitUnstage: (workspace: string, paths: string[]) => invoke<void>("git_unstage", { workspace, paths }),
+  gitDiscard: (workspace: string, tracked: string[], untracked: string[]) => invoke<void>("git_discard", { workspace, tracked, untracked }),
+  gitCommit: (workspace: string, message: string) => invoke<string>("git_commit", { workspace, message }),
+  gitSync: (workspace: string, action: "push" | "pull" | "fetch") => invoke<string>("git_sync", { workspace, action }),
+  gitBranches: (workspace: string) => invoke<string[]>("git_branches", { workspace }),
+  gitCheckout: (workspace: string, branch: string, create: boolean) => invoke<void>("git_checkout", { workspace, branch, create }),
+  gitLog: (workspace: string, count: number) => invoke<GitCommit[]>("git_log", { workspace, count }),
+  gitInit: (workspace: string) => invoke<void>("git_init", { workspace }),
 
   toolDefinitions: (ctx: ToolContext) => invoke<ToolDef[]>("tool_definitions", { ctx }),
   previewTool: (ctx: ToolContext, name: string, args: string) =>

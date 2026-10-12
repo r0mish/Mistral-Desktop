@@ -34,7 +34,8 @@ Un agent façon Claude Code, propulsé par Devstral, travaille dans un dossier d
 - **Diff coloré** avant chaque modification, approbation commande par commande
 - Trois niveaux de permission par session : **Tout demander**, **Modifs auto** (les commandes restent soumises à approbation), **Autonome**
 - Accès **confiné au dossier choisi** via la boîte de dialogue native (chemins `..`, absolus et liens symboliques vers l'extérieur refusés)
-- Commandes non interactives, avec délai max configurable ; l'arrêt tue tout le groupe de processus
+- Commandes non interactives, avec délai max configurable ; l'arrêt tue tout l'arbre de processus
+- **Shell** : bash sous macOS/Linux. Sous Windows, **Git Bash** s'il est installé (les modèles écrivent naturellement du bash), sinon PowerShell 7, sinon Windows PowerShell 5.1 ; l'agent reçoit des consignes adaptées au shell détecté. Choix manuel dans Réglages → Code. Recommandé : installer [Git pour Windows](https://git-scm.com/download/win)
 
 ### Serveurs MCP
 

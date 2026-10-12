@@ -1,5 +1,6 @@
 mod mcp;
 mod mistral;
+mod shell;
 mod storage;
 mod tools;
 mod updates;
@@ -162,8 +163,9 @@ fn cancel_stream(streams: State<'_, Streams>, request_id: String) {
 // ------------------------------------------------------------------ outils
 
 #[tauri::command]
-fn tool_definitions(mcp: State<'_, Arc<McpManager>>, ctx: ToolContext) -> Vec<ToolDef> {
-    tools::definitions(&ctx, &mcp)
+fn tool_definitions(app: AppHandle, mcp: State<'_, Arc<McpManager>>, ctx: ToolContext) -> Vec<ToolDef> {
+    let settings = storage::load_settings(&app).unwrap_or_default();
+    tools::definitions(&ctx, &mcp, &shell::detect(&settings.shell))
 }
 
 #[tauri::command]
@@ -209,7 +211,7 @@ async fn pick_workspace(app: AppHandle) -> CmdResult<Option<String>> {
     });
     let Some(path) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
     let path = path.into_path().map_err(|e| e.to_string())?;
-    let path = path.canonicalize().map_err(|e| e.to_string())?.display().to_string();
+    let path = workspace::simplify_path(&path.canonicalize().map_err(|e| e.to_string())?).display().to_string();
     storage::add_workspace(&app, &path)?;
     Ok(Some(path))
 }
@@ -308,10 +310,14 @@ fn mcp_status(mcp: State<'_, Arc<McpManager>>) -> Vec<ServerStatus> {
 }
 
 #[tauri::command]
-fn platform_info() -> serde_json::Value {
+fn platform_info(app: AppHandle) -> serde_json::Value {
+    let settings = storage::load_settings(&app).unwrap_or_default();
+    let sh = shell::detect(&settings.shell);
     serde_json::json!({
         "os": std::env::consts::OS,
-        "shell": workspace::shell_name(),
+        "shell": sh.name,
+        "shellPath": sh.program.display().to_string(),
+        "shellGuidance": shell::guidance(&sh),
         "version": env!("CARGO_PKG_VERSION"),
     })
 }

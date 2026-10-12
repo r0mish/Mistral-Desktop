@@ -6,10 +6,17 @@ import { escapeHtml } from "./markdown";
 const today = () =>
   new Date().toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 
-export function codeSystemPrompt(workspace: string, os: string, shell: string): string {
+export interface Platform {
+  os: string;
+  shell: string;
+  shellGuidance?: string;
+}
+
+export function codeSystemPrompt(workspace: string, p: Platform): string {
   return `You are an expert software engineering agent working directly in the user's project.
 Project root: ${workspace}
-Operating system: ${os}. Shell used by run_command: ${shell}. Today: ${today()}.
+Operating system: ${p.os}. Today: ${today()}.
+Shell used by run_command: ${p.shell}. ${p.shellGuidance ?? ""}
 
 How to work:
 - Explore before changing anything: use list_files, search_files and read_file. Never guess file contents.
@@ -29,9 +36,9 @@ const WEB_PROMPT = () =>
   `Utilise-les pour toute information récente, chiffrée ou dont tu n'es pas sûr, puis cite tes sources sous forme de liens Markdown [titre](url). ` +
   `Date du jour : ${today()}.`;
 
-export function systemPrompt(conv: Conversation, settings: Settings, platform: { os: string; shell: string }): string {
+export function systemPrompt(conv: Conversation, settings: Settings, platform: Platform): string {
   const parts: string[] = [];
-  if (conv.kind === "code" && conv.workspace) parts.push(codeSystemPrompt(conv.workspace, platform.os, platform.shell));
+  if (conv.kind === "code" && conv.workspace) parts.push(codeSystemPrompt(conv.workspace, platform));
   const user = (conv.systemPrompt ?? settings.systemPrompt)?.trim();
   if (user) parts.push(user);
   if (conv.webSearch) parts.push(WEB_PROMPT());

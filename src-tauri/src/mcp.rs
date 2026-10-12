@@ -103,7 +103,7 @@ struct Http {
 }
 
 enum Transport {
-    Stdio(Stdio_),
+    Stdio(Box<Stdio_>),
     Http(Http),
 }
 
@@ -445,7 +445,7 @@ async fn connect_stdio(cfg: &ServerConfig) -> R<Conn> {
         });
     }
     Ok(Conn {
-        transport: Transport::Stdio(Stdio_ { stdin, pending, child: Mutex::new(child), stderr_tail }),
+        transport: Transport::Stdio(Box::new(Stdio_ { stdin, pending, child: Mutex::new(child), stderr_tail })),
         era: StdMutex::new(Era::Modern(MODERN_VERSION.into())),
         next_id: AtomicU64::new(1),
     })

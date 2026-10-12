@@ -12,6 +12,8 @@ use regex::Regex;
 use tokio::io::AsyncReadExt;
 use tokio::sync::Notify;
 
+use crate::shell::Shell;
+
 type R<T> = Result<T, String>;
 
 const MAX_READ_BYTES: u64 = 5 * 1024 * 1024;
@@ -20,6 +22,21 @@ const MAX_LINE_CHARS: usize = 2000;
 const MAX_LIST_ENTRIES: usize = 500;
 const MAX_SEARCH_MATCHES: usize = 200;
 const MAX_OUTPUT_CHARS: usize = 30_000;
+
+/// Retire le préfixe « verbatim » `\\?\` que `canonicalize()` ajoute sous Windows :
+/// beaucoup de programmes (cmd.exe, scripts npm…) le refusent comme dossier courant.
+pub fn simplify_path(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        if rest.as_bytes().get(1) == Some(&b':') {
+            return PathBuf::from(rest);
+        }
+    }
+    p.to_path_buf()
+}
 
 /// Normalisation purement lexicale (`a/./b/../c` → `a/c`), valable même si le chemin n'existe pas.
 fn normalize(p: &Path) -> PathBuf {
@@ -257,27 +274,21 @@ fn truncate_middle(s: &str, max: usize) -> String {
     format!("{head}\n\n[… {} caractères omis …]\n\n{tail}", n - max)
 }
 
-pub fn shell_name() -> &'static str {
-    if cfg!(windows) { "PowerShell" } else { "sh" }
-}
-
 /// Exécute une commande shell dans le dossier du projet, avec délai max et annulation.
-pub async fn run_command(root: &Path, command: &str, timeout_secs: u64, cancel: Arc<Notify>) -> R<String> {
-    let root = root.canonicalize().map_err(|e| e.to_string())?;
+pub async fn run_command(root: &Path, shell: &Shell, command: &str, timeout_secs: u64, cancel: Arc<Notify>) -> R<String> {
+    let root = simplify_path(&root.canonicalize().map_err(|e| e.to_string())?);
+    let mut cmd = tokio::process::Command::new(&shell.program);
+    cmd.args(crate::shell::args(shell, command));
     #[cfg(windows)]
-    let mut cmd = {
-        let mut c = tokio::process::Command::new("powershell.exe");
-        c.args(["-NoProfile", "-NonInteractive", "-Command", command]);
-        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        c
-    };
+    {
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        if shell.kind == crate::shell::ShellKind::GitBash {
+            // Reste dans le dossier courant et évite les messages de profil.
+            cmd.env("CHERE_INVOKING", "1").env("MSYS2_PATH_TYPE", "inherit");
+        }
+    }
     #[cfg(not(windows))]
-    let mut cmd = {
-        let mut c = tokio::process::Command::new("sh");
-        c.args(["-c", command]);
-        c.process_group(0); // pour tuer aussi les sous-processus
-        c
-    };
+    cmd.process_group(0); // pour tuer aussi les sous-processus
     cmd.current_dir(&root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -314,8 +325,17 @@ pub async fn run_command(root: &Path, command: &str, timeout_secs: u64, cancel: 
                 libc::killpg(pid as i32, libc::SIGKILL);
             }
         }
-        #[cfg(not(unix))]
-        let _ = pid;
+        // Windows : taskkill /T arrête aussi les processus lancés par la commande.
+        #[cfg(windows)]
+        if let Some(pid) = pid {
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new("taskkill")
+                .args(["/T", "/F", "/PID", &pid.to_string()])
+                .creation_flags(0x0800_0000)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
     };
 
     let (o, e, status) = tokio::select! {
@@ -355,13 +375,23 @@ mod tests {
     }
 
     #[test]
+    fn verbatim_prefix_is_removed() {
+        assert_eq!(simplify_path(Path::new(r"\\?\C:\Users\a")), PathBuf::from(r"C:\Users\a"));
+        assert_eq!(simplify_path(Path::new(r"\\?\UNC\srv\share")), PathBuf::from(r"\\srv\share"));
+        assert_eq!(simplify_path(Path::new("/home/a")), PathBuf::from("/home/a"));
+    }
+
+    #[test]
     fn paths_stay_inside_root() {
         let d = tmp();
         assert!(resolve(&d, "src/main.rs").is_ok());
         assert!(resolve(&d, "nouveau/fichier.txt").is_ok());
         assert!(resolve(&d, "../evil").is_err());
         assert!(resolve(&d, "src/../../evil").is_err());
+        #[cfg(unix)]
         assert!(resolve(&d, "/etc/passwd").is_err());
+        #[cfg(windows)]
+        assert!(resolve(&d, r"C:\Windows\win.ini").is_err());
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink("/etc", d.join("lien")).unwrap();
@@ -400,10 +430,34 @@ mod tests {
     #[tokio::test]
     async fn commands_run_in_root_and_time_out() {
         let d = tmp();
-        let out = run_command(&d, "pwd && echo err >&2", 10, Arc::new(Notify::new())).await.unwrap();
+        let sh = crate::shell::detect("auto");
+        let out = run_command(&d, &sh, "pwd && echo err >&2", 10, Arc::new(Notify::new())).await.unwrap();
         assert!(out.contains("Code de sortie : 0"));
         assert!(out.contains("err"));
-        let err = run_command(&d, "sleep 5", 1, Arc::new(Notify::new())).await.unwrap_err();
+        let err = run_command(&d, &sh, "sleep 5", 1, Arc::new(Notify::new())).await.unwrap_err();
         assert!(err.contains("Délai"));
+    }
+
+    /// Exécuté par la CI Windows : chaque shell disponible doit lancer une commande
+    /// et remonter fidèlement le code de sortie.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_shells_run_commands() {
+        use crate::shell::{detect, ShellKind};
+        let d = tmp();
+        for pref in ["auto", "pwsh", "powershell"] {
+            let sh = detect(pref);
+            let ok = run_command(&d, &sh, "echo bonjour", 60, Arc::new(Notify::new())).await.unwrap();
+            assert!(ok.contains("Code de sortie : 0") && ok.contains("bonjour"), "{pref} ({:?}) : {ok}", sh.kind);
+            let fail = if sh.kind == ShellKind::GitBash { "exit 3" } else { "cmd /c exit 3" };
+            let ko = run_command(&d, &sh, fail, 60, Arc::new(Notify::new())).await.unwrap();
+            assert!(ko.contains("Code de sortie : 3"), "{pref} ({:?}) : {ko}", sh.kind);
+        }
+        // Accents et écriture dans le dossier du projet.
+        let sh = detect("auto");
+        let cmd = if sh.kind == ShellKind::GitBash { "echo 'é' > accent.txt && cat accent.txt" } else { "Set-Content accent.txt 'é'; Get-Content accent.txt" };
+        let out = run_command(&d, &sh, cmd, 60, Arc::new(Notify::new())).await.unwrap();
+        assert!(out.contains('é'), "{:?} : {out}", sh.kind);
+        assert!(d.join("accent.txt").is_file());
     }
 }

@@ -98,7 +98,7 @@ interface Draft {
 
 const state = {
   settings: null as unknown as Settings,
-  platform: { os: "linux", shell: "sh", version: "" },
+  platform: { os: "linux", shell: "sh", shellPath: "", shellGuidance: "", version: "" },
   keyConfigured: false,
   models: [] as ModelInfo[],
   convs: [] as ConversationSummary[],
@@ -1340,7 +1340,20 @@ const s = {
   usageTotal: $("#usage-total"),
   usageTable: $("#usage-table"),
   prices: $<HTMLTextAreaElement>("#s-prices"),
+  shell: $<HTMLSelectElement>("#s-shell"),
+  shellWrap: $("#s-shell-wrap"),
+  shellInfo: $("#s-shell-info"),
 };
+
+function renderShellInfo() {
+  const p = state.platform;
+  s.shellWrap.hidden = p.os !== "windows";
+  s.shellInfo.innerHTML = `Shell utilisé par l'agent : <strong>${escapeHtml(p.shell)}</strong>${p.shellPath ? ` — <code>${escapeHtml(p.shellPath)}</code>` : ""}${
+    p.os === "windows" && !/bash/i.test(p.shell)
+      ? '<br>Conseil : installez <a href="https://git-scm.com/download/win" data-external>Git pour Windows</a> pour que l\'agent dispose de bash, la syntaxe que les modèles maîtrisent le mieux.'
+      : ""
+  }`;
+}
 
 const pricesToText = (p: Settings["prices"]) =>
   Object.entries(p)
@@ -1548,6 +1561,8 @@ async function openSettings(tab = "general") {
   s.autoContinue.checked = st.autoContinue;
   s.updates.checked = st.checkUpdates;
   s.prices.value = pricesToText(st.prices ?? {});
+  s.shell.value = st.shell ?? "auto";
+  renderShellInfo();
   if (!s.updateStatus.textContent) s.updateStatus.textContent = `Version installée : ${state.platform.version}`;
   renderUsageTab();
   s.mcp.value = await api.mcpGetConfig().catch(() => "");
@@ -1610,6 +1625,7 @@ $("#settings-form").addEventListener("submit", async (e) => {
     autoContinue: s.autoContinue.checked,
     checkUpdates: s.updates.checked,
     prices: state.settings.prices,
+    shell: s.shell.value as Settings["shell"],
   };
   try {
     next.prices = parsePrices(s.prices.value);
@@ -1626,7 +1642,9 @@ $("#settings-form").addEventListener("submit", async (e) => {
   try {
     const baseChanged = next.baseUrl !== state.settings.baseUrl;
     await api.saveSettings(next);
+    const shellChanged = next.shell !== state.settings.shell;
     state.settings = next;
+    if (shellChanged) state.platform = await api.platform().catch(() => state.platform);
     applyTheme(next.theme);
     if (!state.current) {
       state.selectedModel = defaultModelFor(state.mode);

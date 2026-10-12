@@ -52,7 +52,7 @@ fn func(name: &str, description: &str, properties: Value, required: &[&str]) -> 
     })
 }
 
-pub fn definitions(ctx: &ToolContext, mcp: &McpManager) -> Vec<ToolDef> {
+pub fn definitions(ctx: &ToolContext, mcp: &McpManager, shell: &crate::shell::Shell) -> Vec<ToolDef> {
     let mut out = Vec::new();
     if ctx.web {
         out.push(ToolDef {
@@ -145,8 +145,9 @@ pub fn definitions(ctx: &ToolContext, mcp: &McpManager) -> Vec<ToolDef> {
                 definition: func(
                     "run_command",
                     &format!(
-                        "Exécute une commande {} dans la racine du projet (tests, build, git, linters…). Non interactive : stdin est fermé. Sortie limitée à 30 000 caractères.",
-                        workspace::shell_name()
+                        "Exécute une commande dans la racine du projet (tests, build, git, linters…). Shell : {}. {} Non interactive : stdin est fermé. Sortie limitée à 30 000 caractères.",
+                        shell.name,
+                        crate::shell::guidance(shell)
                     ),
                     json!({
                         "command": { "type": "string" },
@@ -274,7 +275,8 @@ async fn run_inner(ctx: &ToolContext, env: RunEnv<'_>, name: &str, arguments: &s
         "run_command" => {
             let r = root(ctx, env.approved)?;
             let timeout = opt_u(&args, "timeout_seconds").map(|t| t as u64).unwrap_or(env.settings.command_timeout);
-            Ok(text(workspace::run_command(&r, s(&args, "command")?, timeout, env.cancel).await?))
+            let sh = crate::shell::detect(&env.settings.shell);
+            Ok(text(workspace::run_command(&r, &sh, s(&args, "command")?, timeout, env.cancel).await?))
         }
         n if n.starts_with("mcp_") => {
             let (content, is_error) = env.mcp.call(n, args).await?;

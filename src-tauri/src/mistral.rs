@@ -17,6 +17,20 @@ pub struct ChatMessage {
     pub content: String,
     #[serde(default)]
     pub images: Vec<String>,
+    /// Appels d'outils d'un message assistant : `[{id, name, arguments}]`.
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCall>,
+    /// Pour un message `tool` : l'appel auquel il répond.
+    pub tool_call_id: Option<String>,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    /// JSON encodé en chaîne, tel que renvoyé par le modèle.
+    pub arguments: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -26,6 +40,9 @@ pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
+    /// Définitions d'outils au format Mistral (`[{type: "function", function: {...}}]`).
+    #[serde(default)]
+    pub tools: Vec<Value>,
 }
 
 #[derive(Clone, Serialize)]
@@ -35,6 +52,7 @@ pub enum StreamEvent {
     Reasoning { text: String },
     #[serde(rename_all = "camelCase")]
     Usage { prompt_tokens: u64, completion_tokens: u64 },
+    ToolCalls { calls: Vec<ToolCall> },
     #[serde(rename_all = "camelCase")]
     Done { finish_reason: Option<String>, cancelled: bool },
 }
@@ -126,6 +144,22 @@ pub async fn list_models(base: &str, key: &str) -> Result<Vec<ModelInfo>, String
 }
 
 fn to_api_message(m: &ChatMessage) -> Value {
+    if m.role == "tool" {
+        return json!({
+            "role": "tool",
+            "content": m.content,
+            "tool_call_id": m.tool_call_id,
+            "name": m.name,
+        });
+    }
+    if !m.tool_calls.is_empty() {
+        let calls: Vec<Value> = m
+            .tool_calls
+            .iter()
+            .map(|c| json!({ "id": c.id, "type": "function", "function": { "name": c.name, "arguments": c.arguments } }))
+            .collect();
+        return json!({ "role": "assistant", "content": m.content, "tool_calls": calls });
+    }
     if m.images.is_empty() {
         return json!({ "role": m.role, "content": m.content });
     }
@@ -187,6 +221,10 @@ pub async fn chat_stream(
     if let Some(m) = req.max_tokens.filter(|m| *m > 0) {
         body["max_tokens"] = json!(m);
     }
+    if !req.tools.is_empty() {
+        body["tools"] = json!(req.tools);
+        body["tool_choice"] = json!("auto");
+    }
 
     let send = client()?
         .post(endpoint(base, "chat/completions"))
@@ -209,6 +247,21 @@ pub async fn chat_stream(
     let mut stream = resp.bytes_stream();
     let mut buf: Vec<u8> = Vec::new();
     let mut finish_reason: Option<String> = None;
+    let mut calls: Vec<ToolCall> = Vec::new();
+    let flush_calls = |calls: &mut Vec<ToolCall>| {
+        if !calls.is_empty() {
+            for c in calls.iter_mut() {
+                if c.id.is_empty() {
+                    // Format attendu par l'API Mistral : 9 caractères alphanumériques.
+                    c.id = uuid::Uuid::new_v4().simple().to_string()[..9].to_owned();
+                }
+                if c.arguments.trim().is_empty() {
+                    c.arguments = "{}".into();
+                }
+            }
+            let _ = on_event.send(StreamEvent::ToolCalls { calls: std::mem::take(calls) });
+        }
+    };
 
     loop {
         let chunk = tokio::select! {
@@ -227,6 +280,7 @@ pub async fn chat_stream(
             let Some(data) = line.trim().strip_prefix("data:") else { continue };
             let data = data.trim();
             if data == "[DONE]" {
+                flush_calls(&mut calls);
                 let _ = on_event.send(StreamEvent::Done { finish_reason, cancelled: false });
                 return Ok(());
             }
@@ -236,6 +290,24 @@ pub async fn chat_stream(
             }
             let choice = &v["choices"][0];
             emit_content(&choice["delta"]["content"], on_event);
+            for (pos, tc) in choice["delta"]["tool_calls"].as_array().into_iter().flatten().enumerate() {
+                let idx = tc["index"].as_u64().map(|i| i as usize).unwrap_or(pos);
+                if calls.len() <= idx {
+                    calls.resize_with(idx + 1, ToolCall::default);
+                }
+                let c = &mut calls[idx];
+                if let Some(id) = tc["id"].as_str().filter(|s| !s.is_empty() && *s != "null") {
+                    c.id = id.to_owned();
+                }
+                if let Some(n) = tc["function"]["name"].as_str() {
+                    c.name.push_str(n);
+                }
+                match &tc["function"]["arguments"] {
+                    Value::String(a) => c.arguments.push_str(a),
+                    Value::Null => {}
+                    other => c.arguments.push_str(&other.to_string()),
+                }
+            }
             if let Some(fr) = choice["finish_reason"].as_str() {
                 finish_reason = Some(fr.to_owned());
             }
@@ -248,8 +320,98 @@ pub async fn chat_stream(
         }
     }
 
+    flush_calls(&mut calls);
     let _ = on_event.send(StreamEvent::Done { finish_reason, cancelled: false });
     Ok(())
+}
+
+/// Recherche web via le connecteur `web_search` de l'API Conversations de Mistral.
+pub async fn web_search(base: &str, key: &str, query: &str) -> Result<String, String> {
+    let body = json!({
+        "model": "mistral-medium-latest",
+        "inputs": query,
+        "tools": [{ "type": "web_search" }],
+        "store": false,
+        "instructions": "Recherche sur le web et rends un résumé factuel et détaillé des résultats, \
+                         avec les chiffres, dates et noms exacts. Ne conclus pas, ne pose pas de question.",
+    });
+    let resp = client()?
+        .post(endpoint(base, "conversations"))
+        .bearer_auth(key)
+        .json(&body)
+        .timeout(Duration::from_secs(90))
+        .send()
+        .await
+        .map_err(|e| format!("Connexion impossible : {e}"))?;
+    if !resp.status().is_success() {
+        return Err(api_error(resp).await);
+    }
+    let v: Value = resp.json().await.map_err(|e| e.to_string())?;
+    let mut text = String::new();
+    let mut sources: Vec<(String, String)> = Vec::new();
+    for out in v["outputs"].as_array().into_iter().flatten() {
+        if out["type"] != "message.output" {
+            continue;
+        }
+        match &out["content"] {
+            Value::String(s) => text.push_str(s),
+            Value::Array(chunks) => {
+                for c in chunks {
+                    match c["type"].as_str() {
+                        Some("text") => text.push_str(c["text"].as_str().unwrap_or_default()),
+                        Some("tool_reference") => {
+                            if let Some(url) = c["url"].as_str() {
+                                let title = c["title"].as_str().unwrap_or(url).to_owned();
+                                if !sources.iter().any(|(_, u)| u == url) {
+                                    sources.push((title, url.to_owned()));
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if !sources.is_empty() {
+        text.push_str("\n\nSources :\n");
+        for (i, (title, url)) in sources.iter().enumerate() {
+            text.push_str(&format!("[{}] {title} — {url}\n", i + 1));
+        }
+    }
+    if text.trim().is_empty() {
+        return Err("La recherche web n'a renvoyé aucun résultat".into());
+    }
+    Ok(text)
+}
+
+/// OCR d'un document (PDF) via `mistral-ocr-latest`. Renvoie le Markdown de chaque page.
+pub async fn ocr(base: &str, key: &str, name: &str, data_url: &str) -> Result<String, String> {
+    let body = json!({
+        "model": "mistral-ocr-latest",
+        "document": { "type": "document_url", "document_url": data_url, "document_name": name },
+        "include_image_base64": false,
+    });
+    let resp = client()?
+        .post(endpoint(base, "ocr"))
+        .bearer_auth(key)
+        .json(&body)
+        .timeout(Duration::from_secs(300))
+        .send()
+        .await
+        .map_err(|e| format!("Connexion impossible : {e}"))?;
+    if !resp.status().is_success() {
+        return Err(api_error(resp).await);
+    }
+    let v: Value = resp.json().await.map_err(|e| e.to_string())?;
+    let pages: Vec<String> = v["pages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p["markdown"].as_str().map(str::to_owned))
+        .collect();
+    Ok(pages.join("\n\n---\n\n"))
 }
 
 #[cfg(test)]
@@ -277,9 +439,36 @@ mod tests {
             role: "user".into(),
             content: "décris".into(),
             images: vec!["data:image/png;base64,AAA".into()],
+            tool_calls: vec![],
+            tool_call_id: None,
+            name: None,
         };
         let v = to_api_message(&m);
         assert_eq!(v["content"][0]["type"], "text");
         assert_eq!(v["content"][1]["image_url"]["url"], "data:image/png;base64,AAA");
+    }
+
+    #[test]
+    fn tool_messages_round_trip() {
+        let a = ChatMessage {
+            role: "assistant".into(),
+            content: String::new(),
+            images: vec![],
+            tool_calls: vec![ToolCall { id: "abc123def".into(), name: "read_file".into(), arguments: "{\"path\":\"a\"}".into() }],
+            tool_call_id: None,
+            name: None,
+        };
+        let v = to_api_message(&a);
+        assert_eq!(v["tool_calls"][0]["function"]["name"], "read_file");
+        let t = ChatMessage {
+            role: "tool".into(),
+            content: "ok".into(),
+            images: vec![],
+            tool_calls: vec![],
+            tool_call_id: Some("abc123def".into()),
+            name: Some("read_file".into()),
+        };
+        let v = to_api_message(&t);
+        assert_eq!(v["tool_call_id"], "abc123def");
     }
 }

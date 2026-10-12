@@ -22,6 +22,18 @@ pub struct Settings {
     pub max_tokens: Option<u32>,
     pub theme: String,
     pub send_on_enter: bool,
+    /// « mistral » (connecteur web_search) ou « searxng » (instance auto-hébergée).
+    pub web_search_provider: String,
+    pub searxng_url: String,
+    /// Recherche web activée par défaut dans les nouvelles conversations.
+    pub web_search_default: bool,
+    /// PDF : « auto » (extraction locale, OCR si PDF scanné), « local » ou « ocr ».
+    pub pdf_mode: String,
+    pub code_model: String,
+    /// Délai max d'une commande du mode Code, en secondes.
+    pub command_timeout: u64,
+    /// Outils MCP exécutés sans demander (noms exposés).
+    pub mcp_always_allow: Vec<String>,
 }
 
 impl Default for Settings {
@@ -34,6 +46,13 @@ impl Default for Settings {
             max_tokens: None,
             theme: "system".into(),
             send_on_enter: true,
+            web_search_provider: "mistral".into(),
+            searxng_url: String::new(),
+            web_search_default: false,
+            pdf_mode: "auto".into(),
+            code_model: "devstral-medium-latest".into(),
+            command_timeout: 120,
+            mcp_always_allow: Vec::new(),
         }
     }
 }
@@ -54,6 +73,9 @@ pub struct Message {
 pub struct Conversation {
     pub id: String,
     pub title: String,
+    /// « chat » ou « code ».
+    #[serde(default = "default_kind")]
+    pub kind: String,
     #[serde(default)]
     pub model: String,
     pub created_at: i64,
@@ -62,6 +84,13 @@ pub struct Conversation {
     pub system_prompt: Option<String>,
     #[serde(default)]
     pub messages: Vec<Message>,
+    /// Champs propres à l'interface (dossier de projet, mode d'approbation, outils…).
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+fn default_kind() -> String {
+    "chat".into()
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -70,11 +99,21 @@ pub struct ConversationSummary {
     pub id: String,
     pub title: String,
     pub updated_at: i64,
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub workspace: Option<String>,
 }
 
 impl From<&Conversation> for ConversationSummary {
     fn from(c: &Conversation) -> Self {
-        Self { id: c.id.clone(), title: c.title.clone(), updated_at: c.updated_at }
+        Self {
+            id: c.id.clone(),
+            title: c.title.clone(),
+            updated_at: c.updated_at,
+            kind: c.kind.clone(),
+            workspace: c.extra.get("workspace").and_then(Value::as_str).map(str::to_owned),
+        }
     }
 }
 
@@ -186,6 +225,50 @@ pub fn delete_conversation(app: &AppHandle, id: &str) -> R<()> {
     write_json(&index_path(app)?, &idx)
 }
 
+fn workspaces_path(app: &AppHandle) -> R<PathBuf> {
+    Ok(data_dir(app)?.join("workspaces.json"))
+}
+
+/// Dossiers de projet autorisés : uniquement ceux choisis via la boîte de dialogue native.
+pub fn load_workspaces(app: &AppHandle) -> Vec<String> {
+    workspaces_path(app)
+        .ok()
+        .and_then(|p| fs::read(p).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+pub fn add_workspace(app: &AppHandle, path: &str) -> R<Vec<String>> {
+    let mut list = load_workspaces(app);
+    list.retain(|p| p != path);
+    list.insert(0, path.to_owned());
+    list.truncate(30);
+    write_json(&workspaces_path(app)?, &list)?;
+    Ok(list)
+}
+
+pub fn remove_workspace(app: &AppHandle, path: &str) -> R<Vec<String>> {
+    let mut list = load_workspaces(app);
+    list.retain(|p| p != path);
+    write_json(&workspaces_path(app)?, &list)?;
+    Ok(list)
+}
+
+fn mcp_path(app: &AppHandle) -> R<PathBuf> {
+    Ok(ensure_dir(app.path().app_config_dir().map_err(|e| e.to_string())?)?.join("mcp.json"))
+}
+
+pub fn load_mcp_config(app: &AppHandle) -> String {
+    mcp_path(app)
+        .ok()
+        .and_then(|p| fs::read_to_string(p).ok())
+        .unwrap_or_else(|| "{\n  \"mcpServers\": {}\n}\n".into())
+}
+
+pub fn save_mcp_config(app: &AppHandle, text: &str) -> R<()> {
+    write_atomic(&mcp_path(app)?, text.as_bytes())
+}
+
 fn to_markdown(c: &Conversation) -> String {
     let mut md = format!("# {}\n\n", c.title);
     if !c.model.is_empty() {
@@ -200,7 +283,18 @@ fn to_markdown(c: &Conversation) -> String {
             },
             other => other.to_string(),
         };
-        md.push_str(&format!("## {who}\n\n{}\n\n", m.content.trim()));
+        if m.role == "assistant" && m.content.trim().is_empty() && m.extra.contains_key("toolCalls") {
+            // Tour purement « outils » : on le résume sous le message précédent.
+        } else {
+            md.push_str(&format!("## {who}\n\n{}\n\n", m.content.trim()));
+        }
+        for tc in m.extra.get("toolCalls").and_then(Value::as_array).into_iter().flatten() {
+            md.push_str(&format!(
+                "> 🔧 `{}` {}\n\n",
+                tc["name"].as_str().unwrap_or("?"),
+                tc["arguments"].as_str().unwrap_or("").chars().take(200).collect::<String>()
+            ));
+        }
         let images = m.extra.get("images").and_then(Value::as_array).map_or(0, Vec::len);
         if images > 0 {
             md.push_str(&format!("_[{images} image(s) jointe(s)]_\n\n"));

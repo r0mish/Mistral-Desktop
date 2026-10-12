@@ -10,9 +10,17 @@
     <div id="app">
       <aside id="sidebar">
         <div class="sidebar-top">
+          <div class="mode-tabs" role="tablist">
+            <button data-mode="chat" class="active" title="Conversations (Ctrl+1)">
+              <svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6.4A8 8 0 1 1 21 12z" /></svg>Chat
+            </button>
+            <button data-mode="code" title="Agent de code (Ctrl+2)">
+              <svg viewBox="0 0 24 24"><path d="m16 18 6-6-6-6M8 6l-6 6 6 6" /></svg>Code
+            </button>
+          </div>
           <button id="new-chat" class="btn-new" title="Nouvelle conversation (Ctrl+N)">
             <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>
-            Nouvelle conversation
+            <span id="new-chat-label">Nouvelle conversation</span>
           </button>
           <input id="search" type="search" placeholder="Rechercher…" autocomplete="off" />
         </div>
@@ -31,6 +39,15 @@
             <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" /></svg>
           </button>
           <h1 id="conv-title"></h1>
+          <button id="ws-chip" class="chip-btn" title="Ouvrir le dossier du projet" hidden>
+            <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>
+            <span></span>
+          </button>
+          <select id="perm-select" title="Permissions de l'agent" hidden>
+            <option value="ask">Tout demander</option>
+            <option value="acceptEdits">Modifs auto</option>
+            <option value="auto">Autonome</option>
+          </select>
           <select id="model-select" title="Modèle"></select>
           <button id="export-btn" class="icon-btn" title="Exporter en Markdown" hidden>
             <svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14" /></svg>
@@ -48,6 +65,12 @@
                 <svg viewBox="0 0 24 24"><path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" /></svg>
               </button>
               <input id="file-input" type="file" multiple hidden />
+              <button type="button" id="web-toggle" class="toggle" title="Recherche web">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" /></svg>Web
+              </button>
+              <button type="button" id="mcp-toggle" class="toggle" title="Outils MCP" hidden>
+                <svg viewBox="0 0 24 24"><path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0zM12 18v4" /></svg><span>MCP</span>
+              </button>
               <span id="hint"></span>
               <button type="submit" id="send-btn" class="send" title="Envoyer">
                 <svg class="i-send" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
@@ -63,56 +86,125 @@
 
     <dialog id="settings">
       <form id="settings-form" method="dialog">
-        <h2>Réglages</h2>
+        <div class="settings-head">
+          <h2>Réglages</h2>
+          <nav class="settings-tabs">
+            <button type="button" data-tab="general" class="active">Général</button>
+            <button type="button" data-tab="tools">Outils</button>
+            <button type="button" data-tab="mcp">MCP</button>
+            <button type="button" data-tab="code">Code</button>
+          </nav>
+        </div>
 
-        <fieldset>
-          <legend>Clé API Mistral</legend>
-          <p class="muted" id="key-status"></p>
-          <div class="row">
-            <input id="api-key" type="password" placeholder="Collez votre clé API" autocomplete="off" spellcheck="false" />
-            <button type="button" id="save-key" class="btn-primary">Enregistrer</button>
-            <button type="button" id="delete-key" class="btn-ghost danger">Supprimer</button>
-          </div>
-          <p class="muted small">
-            La clé est stockée dans le trousseau du système (Keychain, Credential Manager, Secret Service), jamais en clair sur le disque.
-            <a href="https://console.mistral.ai/api-keys" data-external>Obtenir une clé</a>
-          </p>
-        </fieldset>
+        <div class="tab" data-tab="general">
+          <fieldset>
+            <legend>Clé API Mistral</legend>
+            <p class="muted" id="key-status"></p>
+            <div class="row">
+              <input id="api-key" type="password" placeholder="Collez votre clé API" autocomplete="off" spellcheck="false" />
+              <button type="button" id="save-key" class="btn-primary">Enregistrer</button>
+              <button type="button" id="delete-key" class="btn-ghost danger">Supprimer</button>
+            </div>
+            <p class="muted small">
+              Stockée dans le trousseau du système (Keychain, Credential Manager, Secret Service), jamais en clair sur le disque.
+              <a href="https://console.mistral.ai/api-keys" data-external>Obtenir une clé</a>
+            </p>
+          </fieldset>
 
-        <fieldset>
-          <legend>Modèle et génération</legend>
-          <label>Modèle par défaut <select id="s-model"></select></label>
-          <label>Instructions système (appliquées aux nouvelles conversations)
-            <textarea id="s-system" rows="4" placeholder="Ex. : Réponds en français, de façon concise."></textarea>
-          </label>
-          <div class="grid2">
-            <label>Température <input id="s-temp" type="number" min="0" max="1.5" step="0.1" placeholder="défaut du modèle" /></label>
-            <label>Tokens max <input id="s-max" type="number" min="1" step="1" placeholder="illimité" /></label>
-          </div>
-        </fieldset>
+          <fieldset>
+            <legend>Modèle et génération</legend>
+            <label>Modèle par défaut (Chat) <select id="s-model"></select></label>
+            <label>Instructions système (appliquées aux nouvelles conversations)
+              <textarea id="s-system" rows="3" placeholder="Ex. : Réponds en français, de façon concise."></textarea>
+            </label>
+            <div class="grid2">
+              <label>Température <input id="s-temp" type="number" min="0" max="1.5" step="0.1" placeholder="défaut du modèle" /></label>
+              <label>Tokens max <input id="s-max" type="number" min="1" step="1" placeholder="illimité" /></label>
+            </div>
+          </fieldset>
 
-        <fieldset>
-          <legend>Interface</legend>
-          <div class="grid2">
-            <label>Thème
-              <select id="s-theme">
-                <option value="system">Système</option>
-                <option value="light">Clair</option>
-                <option value="dark">Sombre</option>
+          <fieldset>
+            <legend>Interface</legend>
+            <div class="grid2">
+              <label>Thème
+                <select id="s-theme">
+                  <option value="system">Système</option>
+                  <option value="light">Clair</option>
+                  <option value="dark">Sombre</option>
+                </select>
+              </label>
+              <label class="check"><input id="s-enter" type="checkbox" /> Entrée pour envoyer (Maj+Entrée = retour ligne)</label>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Avancé</legend>
+            <label>URL de l'API
+              <input id="s-base" type="url" placeholder="https://api.mistral.ai" spellcheck="false" />
+            </label>
+            <p class="muted small">Compatible avec un serveur auto-hébergé exposant l'API OpenAI (vLLM, Ollama, llama.cpp…). HTTP autorisé seulement sur localhost.</p>
+            <p class="muted small">Données locales : <code id="data-dir"></code></p>
+          </fieldset>
+        </div>
+
+        <div class="tab" data-tab="tools" hidden>
+          <fieldset>
+            <legend>Recherche web</legend>
+            <label>Fournisseur
+              <select id="s-web-provider">
+                <option value="mistral">Mistral (connecteur web_search de l'API)</option>
+                <option value="searxng">SearXNG (instance auto-hébergée)</option>
               </select>
             </label>
-            <label class="check"><input id="s-enter" type="checkbox" /> Entrée pour envoyer (Maj+Entrée = retour ligne)</label>
-          </div>
-        </fieldset>
+            <label id="s-searx-wrap">URL de l'instance SearXNG
+              <input id="s-searx" type="url" placeholder="https://searx.example.org" spellcheck="false" />
+            </label>
+            <p class="muted small">SearXNG : activez le format JSON (<code>search.formats: [html, json]</code> dans settings.yml). Les pages lues par <code>fetch_url</code> sont téléchargées depuis votre machine ; les adresses du réseau local sont bloquées.</p>
+            <label class="check"><input id="s-web-default" type="checkbox" /> Activer la recherche web par défaut</label>
+          </fieldset>
+          <fieldset>
+            <legend>Documents PDF</legend>
+            <label>Conversion en texte
+              <select id="s-pdf">
+                <option value="auto">Automatique : extraction locale, OCR Mistral si le PDF est scanné</option>
+                <option value="local">Locale uniquement (rien n'est envoyé pour la conversion)</option>
+                <option value="ocr">Toujours OCR Mistral (meilleure qualité : tableaux, scans)</option>
+              </select>
+            </label>
+          </fieldset>
+        </div>
 
-        <fieldset>
-          <legend>Avancé</legend>
-          <label>URL de l'API
-            <input id="s-base" type="url" placeholder="https://api.mistral.ai" spellcheck="false" />
-          </label>
-          <p class="muted small">Compatible avec un serveur auto-hébergé exposant l'API OpenAI (vLLM, Ollama, llama.cpp…). HTTP autorisé seulement sur localhost.</p>
-          <p class="muted small">Données locales : <code id="data-dir"></code></p>
-        </fieldset>
+        <div class="tab" data-tab="mcp" hidden>
+          <fieldset>
+            <legend>Serveurs MCP</legend>
+            <p class="muted small">Même format que Claude Desktop. Serveurs locaux (<code>command</code>) ou distants (<code>url</code> + <code>headers</code>). Protocole MCP 2026-07-28, avec repli automatique pour les serveurs plus anciens.</p>
+            <textarea id="s-mcp" rows="10" spellcheck="false" class="mono"></textarea>
+            <div class="row end">
+              <button type="button" id="mcp-example" class="btn-ghost sm">Insérer un exemple</button>
+              <button type="button" id="mcp-apply" class="btn-primary sm">Appliquer et redémarrer</button>
+            </div>
+            <div id="mcp-status"></div>
+          </fieldset>
+          <fieldset>
+            <legend>Outils toujours autorisés</legend>
+            <div id="mcp-allowed"></div>
+          </fieldset>
+        </div>
+
+        <div class="tab" data-tab="code" hidden>
+          <fieldset>
+            <legend>Agent de code</legend>
+            <label>Modèle par défaut (Code) <select id="s-code-model"></select></label>
+            <label>Délai maximal d'une commande (secondes)
+              <input id="s-timeout" type="number" min="5" max="3600" step="5" />
+            </label>
+            <p class="muted small">L'agent ne peut lire et écrire que dans le dossier de projet choisi. Les commandes s'exécutent avec vos droits : en mode « Tout demander » ou « Modifs auto », chacune doit être approuvée.</p>
+          </fieldset>
+          <fieldset>
+            <legend>Dossiers de projet autorisés</legend>
+            <div id="ws-list"></div>
+          </fieldset>
+        </div>
 
         <p id="settings-error" class="error" hidden></p>
         <div class="dialog-actions">

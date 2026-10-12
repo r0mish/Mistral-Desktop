@@ -241,7 +241,7 @@ fn forget_workspace(app: AppHandle, path: String) -> CmdResult<Vec<String>> {
 #[tauri::command]
 fn touch_workspace(app: AppHandle, path: String) -> CmdResult<()> {
     // Ne fait que remonter un dossier déjà autorisé en tête de liste.
-    if storage::load_workspaces(&app).contains(&path) {
+    if storage::load_workspaces(&app).contains(&workspace::normalize_workspace(&path)) {
         storage::add_workspace(&app, &path)?;
     }
     Ok(())

@@ -38,6 +38,14 @@ pub fn simplify_path(p: &Path) -> PathBuf {
     p.to_path_buf()
 }
 
+/// Forme canonique d'un dossier de projet enregistré (chemins locaux sans préfixe `\\?\`).
+pub fn normalize_workspace(ws: &str) -> String {
+    if ws.starts_with("ssh:") {
+        return ws.to_string();
+    }
+    simplify_path(Path::new(ws)).display().to_string()
+}
+
 /// Normalisation purement lexicale (`a/./b/../c` → `a/c`), valable même si le chemin n'existe pas.
 fn normalize(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
@@ -388,6 +396,8 @@ mod tests {
         assert_eq!(simplify_path(Path::new(r"\\?\C:\Users\a")), PathBuf::from(r"C:\Users\a"));
         assert_eq!(simplify_path(Path::new(r"\\?\UNC\srv\share")), PathBuf::from(r"\\srv\share"));
         assert_eq!(simplify_path(Path::new("/home/a")), PathBuf::from("/home/a"));
+        assert_eq!(normalize_workspace("ssh:h1:/srv/app"), "ssh:h1:/srv/app");
+        assert_eq!(normalize_workspace("/home/a"), "/home/a");
     }
 
     #[test]

@@ -695,3 +695,41 @@ table.usage th { color: var(--muted); font-weight: 500; }
 #topbar #conv-project { max-width: 140px; }
 #topbar > .instr-chip { min-width: 0; flex-shrink: 0; padding: 4px 7px; }
 .instr-chip span { display: none; }
+
+/* ---------------------------------------------------------------- nouvelle session de code */
+.ws-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 18px 0 8px; }
+.ws-choice {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-align: left;
+  padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-elev);
+}
+.ws-choice svg { width: 22px; height: 22px; color: var(--accent); margin-bottom: 4px; }
+.ws-choice strong { font-size: 15px; }
+.ws-choice small { color: var(--muted); font-size: 12.5px; }
+.ws-choice:hover { border-color: var(--accent); box-shadow: var(--shadow); }
+.ws-current.selected { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+.ws-tag { color: var(--accent) !important; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-size: 10.5px !important; }
+.welcome .center { text-align: center; }
+#composer-wrap { position: relative; }
+.ws-picker { max-width: 220px; }
+.ws-picker span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-picker .chev { width: 12px; height: 12px; }
+.ws-picker.remote svg:first-child { color: #2f81f7; }
+.ws-menu {
+  position: absolute; bottom: calc(100% - 4px); left: 32px; z-index: 20;
+  width: min(420px, calc(100% - 64px)); max-height: 360px; overflow-y: auto;
+  padding: 6px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-elev);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+.ws-menu .group { padding: 6px 8px 4px; }
+.ws-menu hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
+.ws-menu-item {
+  display: grid; grid-template-columns: 18px 1fr; column-gap: 8px; align-items: center; width: 100%;
+  padding: 7px 8px; border: none; border-radius: 8px; background: transparent; text-align: left; font-size: 13.5px;
+}
+.ws-menu-item svg { width: 16px; height: 16px; color: var(--muted); }
+.ws-menu-item small { grid-column: 2; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-menu-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-menu-item:hover { background: var(--bg-hover); }
+.ws-menu-item.current { background: var(--bg-active); }
+.ws-menu-item.action svg { color: var(--accent); }
+@media (max-width: 760px) { .ws-choices { grid-template-columns: 1fr; } .ws-menu { left: 16px; } }

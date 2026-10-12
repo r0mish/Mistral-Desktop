@@ -91,6 +91,8 @@ fn rel_of(root: &str, abs: &str) -> String {
 
 /// Dossier de projet autorisé correspondant à `ws` (chemin local ou `ssh:<hôte>:<chemin>`).
 pub fn resolve(ws: &str, approved: &[String], hosts: &[SshHost]) -> R<Target> {
+    // Les conversations d'anciennes versions peuvent contenir `\\?\C:\…`.
+    let ws = &workspace::normalize_workspace(ws);
     if !approved.iter().any(|a| a == ws) {
         return Err("Dossier de projet non autorisé : ouvrez-le via « Ouvrir un dossier » ou « Serveur SSH »".into());
     }

@@ -44,8 +44,10 @@ export function workspaceLabel(ws: string): { name: string; detail: string; remo
     const host = r.host?.label ?? "serveur supprimé";
     return { name: `${host} : ${base}`, detail: `${r.host?.host ?? "?"}:${r.path}`, remote: true };
   }
-  const base = ws.split(/[\\/]/).filter(Boolean).pop() ?? ws;
-  return { name: base, detail: ws, remote: false };
+  // Préfixe interne `\\?\` enregistré par d'anciennes versions sous Windows.
+  const path = ws.replace(/^\\\\\?\\(?=[A-Za-z]:)/, "");
+  const base = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  return { name: base, detail: path, remote: false };
 }
 
 function formHost(): SshHost {

@@ -58,6 +58,8 @@ const el = {
   usageInfo: $("#usage-info"),
   updateBanner: $("#update-banner"),
   gitBtn: $<HTMLButtonElement>("#git-btn"),
+  wsPicker: $<HTMLButtonElement>("#ws-picker"),
+  wsMenu: $("#ws-menu"),
   instrChip: $<HTMLButtonElement>("#instr-chip"),
   projectSelect: $<HTMLSelectElement>("#project-select"),
   projectEdit: $<HTMLButtonElement>("#project-edit"),
@@ -441,7 +443,8 @@ function newChat() {
   }
   state.current = null;
   state.draft = {
-    workspace: state.mode === "code" ? (projectWorkspace(state.projectFilter) ?? state.workspaces[0]) : undefined,
+    // Pas de dossier repris en silence : on le choisit explicitement (sauf projet avec dossier).
+    workspace: state.mode === "code" ? projectWorkspace(state.projectFilter) : undefined,
     webSearch: state.settings.webSearchDefault,
     mcp: true,
     permissionMode: "ask",
@@ -495,6 +498,7 @@ function renderChrome() {
     el.wsChip.classList.toggle("remote", l.remote);
   }
   renderInstrChip(o.kind === "code" ? o.workspace : undefined);
+  renderWsPicker();
   const projects = projectList();
   el.convProject.hidden = projects.length === 0;
   if (projects.length) {
@@ -573,6 +577,71 @@ el.instrChip.addEventListener("click", () => {
   revealItemInDir(`${ws.replace(/[\\/]$/, "")}${sep}${f.name}`).catch((e) => toast(errMsg(e), true));
 });
 
+function selectWorkspace(ws: string) {
+  toggleWsMenu(false);
+  state.draft.workspace = ws;
+  api
+    .touchWorkspace(ws)
+    .then(() => api.listWorkspaces())
+    .then((w) => (state.workspaces = w))
+    .catch(() => {});
+  renderConversation();
+  el.input.focus();
+}
+
+/** Bouton « dossier » de la zone de saisie (nouvelle session de code uniquement). */
+function renderWsPicker() {
+  const show = !state.current && state.mode === "code";
+  el.wsPicker.hidden = !show;
+  if (!show) return toggleWsMenu(false);
+  const ws = state.draft.workspace;
+  const l = ws ? workspaceLabel(ws) : null;
+  el.wsPicker.querySelector("span")!.textContent = l ? l.name : "Choisir un dossier";
+  el.wsPicker.classList.toggle("on", !!ws);
+  el.wsPicker.classList.toggle("remote", !!l?.remote);
+  el.wsPicker.title = l ? `${l.detail}\nCliquer pour changer de dossier` : "Choisir le dossier de travail : local ou serveur SSH";
+}
+
+function toggleWsMenu(open = el.wsMenu.hidden) {
+  if (!open) {
+    el.wsMenu.hidden = true;
+    return;
+  }
+  const cur = state.draft.workspace;
+  const recent = state.workspaces
+    .slice(0, 8)
+    .map((w) => {
+      const l = workspaceLabel(w);
+      return `<button type="button" class="ws-menu-item${w === cur ? " current" : ""}" data-ws="${escapeHtml(w)}" title="${escapeHtml(l.detail)}">${l.remote ? icons.server : icons.folder}<span>${escapeHtml(l.name)}</span><small>${escapeHtml(l.detail)}</small></button>`;
+    })
+    .join("");
+  el.wsMenu.innerHTML = `${recent ? `<div class="group">Dossiers récents</div>${recent}<hr />` : ""}
+    <button type="button" class="ws-menu-item action" data-pick-ws>${icons.folder}<span>Ouvrir un dossier local…</span></button>
+    <button type="button" class="ws-menu-item action" data-ssh>${icons.server}<span>Dossier sur un serveur SSH…</span></button>`;
+  el.wsMenu.hidden = false;
+}
+
+el.wsPicker.addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleWsMenu();
+});
+el.wsMenu.addEventListener("click", (e) => {
+  const t = e.target as HTMLElement;
+  const ws = t.closest<HTMLElement>("[data-ws]")?.dataset.ws;
+  if (ws) return selectWorkspace(ws);
+  if (t.closest("[data-pick-ws]")) {
+    toggleWsMenu(false);
+    return chooseWorkspace();
+  }
+  if (t.closest("[data-ssh]")) {
+    toggleWsMenu(false);
+    return openSshDialog();
+  }
+});
+document.addEventListener("click", (e) => {
+  if (!el.wsMenu.hidden && !(e.target as HTMLElement).closest("#ws-menu, #ws-picker")) toggleWsMenu(false);
+});
+
 function openRemoteWorkspace(ws: string) {
   api.listWorkspaces().then((w) => (state.workspaces = w)).catch(() => {});
   if (state.current) newChat();
@@ -617,15 +686,21 @@ function renderWelcome() {
       })
       .join("");
     const cur = ws ? workspaceLabel(ws) : null;
+    const selected = cur
+      ? `<div class="ws-current selected">${cur.remote ? icons.server : icons.folder}<div><small class="ws-tag">Dossier de cette session</small><strong>${escapeHtml(cur.name)}</strong><small>${escapeHtml(cur.detail)}</small></div></div>
+         ${instrHint(ws!)}`
+      : "";
     el.messages.innerHTML = `<div class="welcome code">
-      <h2>Agent de code</h2>
-      <p>L'agent explore, modifie et teste le code d'un dossier de votre machine ou d'un serveur SSH. Chaque modification et commande peut être soumise à votre approbation.</p>
-      ${cur
-        ? `<div class="ws-current">${cur.remote ? icons.server : icons.folder}<div><strong>${escapeHtml(cur.name)}</strong><small>${escapeHtml(cur.detail)}</small></div><button class="btn-ghost sm" data-pick-ws title="Choisir un autre dossier sur cette machine">${icons.folder} Changer</button><button class="btn-ghost sm" data-ssh title="Travailler dans un dossier d'un serveur distant">${icons.server} Serveur SSH…</button></div>`
-        : `<p class="row center"><button class="btn-primary" data-pick-ws>${icons.folder} Ouvrir un dossier</button><button class="btn-ghost" data-ssh>${icons.server} Serveur SSH…</button></p>`}
-      ${ws ? instrHint(ws) : ""}
+      <h2>Nouvelle session de code</h2>
+      <p>${cur ? "L'agent va travailler dans ce dossier. Décrivez la tâche ci-dessous, ou choisissez un autre dossier." : "Où l'agent doit-il travailler ? Choisissez un dossier de cet ordinateur ou d'un serveur distant."}</p>
+      ${selected}
+      <div class="ws-choices">
+        <button class="ws-choice" data-pick-ws>${icons.folder}<strong>Dossier local</strong><small>Un dossier de cet ordinateur</small></button>
+        <button class="ws-choice" data-ssh>${icons.server}<strong>Serveur SSH</strong><small>Un dossier sur une machine distante</small></button>
+      </div>
       ${projectBanner()}
-      ${recent ? `<div class="ws-recent"><div class="group">Récents</div>${recent}</div>` : ""}
+      ${recent ? `<div class="ws-recent"><div class="group">Dossiers récents</div>${recent}</div>` : ""}
+      <p class="muted small center">Chaque modification et commande peut être soumise à votre approbation (menu « Tout demander » en haut).</p>
     </div>`;
     return;
   }
@@ -785,12 +860,7 @@ el.messages.addEventListener("click", async (ev) => {
     return el.input.focus();
   }
   const wsItem = t.closest<HTMLElement>("[data-ws]");
-  if (wsItem) {
-    state.draft.workspace = wsItem.dataset.ws;
-    api.touchWorkspace(wsItem.dataset.ws!).catch(() => {});
-    renderConversation();
-    return el.input.focus();
-  }
+  if (wsItem) return selectWorkspace(wsItem.dataset.ws!);
 
   const approve = t.closest<HTMLElement>("[data-approve]");
   if (approve) {
@@ -895,8 +965,8 @@ async function send() {
 
   const o = opts();
   if (o.kind === "code" && !o.workspace) {
-    toast("Choisissez d'abord un dossier de projet.", true);
-    return chooseWorkspace();
+    toast("Choisissez d'abord le dossier de travail : local ou serveur SSH.", true);
+    return toggleWsMenu(true);
   }
   const model = state.selectedModel;
   if (images.length && modelInfo(model)?.vision === false) {
@@ -1936,6 +2006,9 @@ window.addEventListener("keydown", (e) => {
   } else if (mod && e.shiftKey && k === "d") {
     e.preventDefault();
     toggleDictation();
+  } else if (e.key === "Escape" && !el.wsMenu.hidden) {
+    e.preventDefault();
+    toggleWsMenu(false);
   } else if (e.key === "Escape" && document.querySelector("dialog[open]")) {
     // WebKitGTK ne ferme pas toujours le <dialog> natif avec Échap.
     e.preventDefault();

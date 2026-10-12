@@ -338,6 +338,8 @@ mod tests {
         let cfg = |k: &str, v: &str| std::process::Command::new("git").args(["config", k, v]).current_dir(&d).status().unwrap();
         cfg("user.name", "Test");
         cfg("user.email", "test@example.org");
+        // Git pour Windows active autocrlf par défaut : on compare des octets exacts.
+        cfg("core.autocrlf", "false");
         std::fs::write(d.join("a.txt"), "un\n").unwrap();
         let st = status(&t).await.unwrap();
         assert_eq!(st.files[0].index, "?");

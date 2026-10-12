@@ -15,6 +15,36 @@ type R<T> = Result<T, String>;
 const FILE_OP_TIMEOUT: Duration = Duration::from_secs(60);
 const SKIP_DIRS: [&str; 7] = [".git", "node_modules", "target", ".venv", "__pycache__", ".next", "vendor"];
 
+/// Fichiers de consignes reconnus, par ordre de priorité.
+pub const INSTRUCTION_FILES: [&str; 3] = ["AGENTS.md", "MISTRAL.md", "CLAUDE.md"];
+const MAX_INSTRUCTION_BYTES: usize = 32 * 1024;
+const SEP: &str = "\u{1}__MDFILE__";
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct InstructionFile {
+    pub name: String,
+    pub content: String,
+    pub truncated: bool,
+}
+
+/// Tronque, et ignore les doublons (CLAUDE.md lien symbolique vers AGENTS.md…).
+fn dedupe_instructions(raw: Vec<(String, Vec<u8>)>) -> Vec<InstructionFile> {
+    let mut out: Vec<InstructionFile> = Vec::new();
+    for (name, bytes) in raw {
+        let truncated = bytes.len() > MAX_INSTRUCTION_BYTES;
+        let mut content = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_INSTRUCTION_BYTES)]).into_owned();
+        if truncated {
+            content.push_str("\n[… tronqué]");
+        }
+        let content = content.trim().to_string();
+        if content.is_empty() || out.iter().any(|f| f.content == content) {
+            continue;
+        }
+        out.push(InstructionFile { name, content, truncated });
+    }
+    out
+}
+
 pub enum Target {
     Local(PathBuf),
     Remote { host: SshHost, root: String },
@@ -120,6 +150,45 @@ impl Target {
         } else {
             Err(format!("{rel} : {}", o.stderr.trim()))
         }
+    }
+
+    /// Fichiers de consignes à la racine du projet (AGENTS.md…), lus automatiquement par l'agent.
+    pub async fn instruction_files(&self) -> R<Vec<InstructionFile>> {
+        let raw: Vec<(String, Vec<u8>)> = match self {
+            Target::Local(root) => INSTRUCTION_FILES
+                .iter()
+                .filter_map(|name| {
+                    let p = root.join(name);
+                    p.is_file().then(|| std::fs::read(&p).ok().map(|b| (name.to_string(), b))).flatten()
+                })
+                .collect(),
+            Target::Remote { .. } => {
+                // Un seul aller-retour SSH pour tous les fichiers.
+                let names = INSTRUCTION_FILES.iter().map(|n| quote(n)).collect::<Vec<_>>().join(" ");
+                let script = format!(
+                    "cd -- {} || exit 1\nfor f in {names}; do if [ -f \"$f\" ]; then printf '\\001__MDFILE__%s\\n' \"$f\"; head -c {max} -- \"$f\"; fi; done",
+                    self.root_q(),
+                    max = MAX_INSTRUCTION_BYTES + 1
+                );
+                let o = self.sh(&script, None).await?;
+                if o.code != Some(0) {
+                    return Err(o.stderr.trim().to_string());
+                }
+                let text = o.stdout;
+                let mut out = Vec::new();
+                let sep = SEP.as_bytes();
+                let starts: Vec<usize> = text.windows(sep.len()).enumerate().filter(|(_, w)| *w == sep).map(|(i, _)| i).collect();
+                for (k, &i) in starts.iter().enumerate() {
+                    let end = starts.get(k + 1).copied().unwrap_or(text.len());
+                    let chunk = &text[i + sep.len()..end];
+                    if let Some(nl) = chunk.iter().position(|&b| b == b'\n') {
+                        out.push((String::from_utf8_lossy(&chunk[..nl]).into_owned(), chunk[nl + 1..].to_vec()));
+                    }
+                }
+                out
+            }
+        };
+        Ok(dedupe_instructions(raw))
     }
 
     pub async fn list_files(&self, rel: &str, depth: usize) -> R<String> {
@@ -330,6 +399,23 @@ mod tests {
         assert_eq!(parse_remote("/home/me/projet"), None);
         assert_eq!(parse_remote(r"C:\projet"), None);
     }
+
+    #[tokio::test]
+    async fn local_instruction_files() {
+        let dir = std::env::temp_dir().join(format!("md-instr-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let t = Target::Local(dir.clone());
+        assert!(t.instruction_files().await.unwrap().is_empty());
+        std::fs::write(dir.join("AGENTS.md"), "# Règles\nTests : cargo test\n").unwrap();
+        std::fs::write(dir.join("CLAUDE.md"), "# Règles\nTests : cargo test\n").unwrap();
+        std::fs::write(dir.join("MISTRAL.md"), "x".repeat(MAX_INSTRUCTION_BYTES + 10)).unwrap();
+        let files = t.instruction_files().await.unwrap();
+        let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+        // CLAUDE.md identique à AGENTS.md : ignoré.
+        assert_eq!(names, ["AGENTS.md", "MISTRAL.md"]);
+        assert!(files[1].truncated && files[1].content.ends_with("[… tronqué]"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
 
 /// Test d'intégration contre un vrai serveur SSH, activé par variables d'environnement :
@@ -403,7 +489,16 @@ mod ssh_integration {
         let detail = ssh::exec(&h, "ps -eo pid,pgid,stat,args | grep '[m]d-cancel-marker' || true", None, Duration::from_secs(20), None).await.unwrap();
         assert_eq!(ps.stdout_text().trim(), "0", "le processus distant tourne encore : {}", detail.stdout_text());
 
-        // 6. Git distant.
+        // 6. Fichiers de consignes.
+        assert!(t.instruction_files().await.unwrap().is_empty());
+        t.write_file("AGENTS.md", "Toujours lancer pytest.").await.unwrap();
+        t.write_file("CLAUDE.md", "Style : PEP 8").await.unwrap();
+        let files = t.instruction_files().await.unwrap();
+        assert_eq!(files.len(), 2, "{files:?}");
+        assert_eq!((files[0].name.as_str(), files[0].content.as_str()), ("AGENTS.md", "Toujours lancer pytest."));
+        assert_eq!((files[1].name.as_str(), files[1].content.as_str()), ("CLAUDE.md", "Style : PEP 8"));
+
+        // 7. Git distant.
         assert!(!crate::git::status(&t).await.unwrap().is_repo);
         crate::git::init(&t).await.unwrap();
         t.run_command(&sh, "git config user.name T && git config user.email t@e.org", 30, Arc::new(Notify::new())).await.unwrap();

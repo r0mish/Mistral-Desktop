@@ -46,6 +46,10 @@ pub struct Settings {
     pub shell: String,
     /// Tarifs en $ par million de tokens : « préfixe de modèle » → [entrée, sortie].
     pub prices: std::collections::BTreeMap<String, [f64; 2]>,
+    /// Dictée vocale : modèle de transcription, langue (vide = détection) et serveur dédié (vide = API Mistral).
+    pub transcription_model: String,
+    pub transcription_language: String,
+    pub transcription_url: String,
 }
 
 /// Tarifs indicatifs (sources tierces, octobre 2026) : modifiables dans les réglages.
@@ -92,6 +96,9 @@ impl Default for Settings {
             skipped_version: String::new(),
             shell: "auto".into(),
             prices: default_prices(),
+            transcription_model: "voxtral-mini-latest".into(),
+            transcription_language: "fr".into(),
+            transcription_url: String::new(),
         }
     }
 }
@@ -142,6 +149,8 @@ pub struct ConversationSummary {
     pub kind: String,
     #[serde(default)]
     pub workspace: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 impl From<&Conversation> for ConversationSummary {
@@ -152,6 +161,7 @@ impl From<&Conversation> for ConversationSummary {
             updated_at: c.updated_at,
             kind: c.kind.clone(),
             workspace: c.extra.get("workspace").and_then(Value::as_str).map(str::to_owned),
+            project_id: c.extra.get("projectId").and_then(Value::as_str).map(str::to_owned),
         }
     }
 }
@@ -315,6 +325,70 @@ pub fn record_usage(app: &AppHandle, day: &str, model: &str, prompt: u64, comple
     e[1] += completion;
     e[2] += 1;
     write_json(&usage_path(app)?, &log)
+}
+
+/// Projet : conversations regroupées partageant des consignes et des fichiers de référence.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub instructions: String,
+    #[serde(default)]
+    pub files: Vec<ProjectFile>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFile {
+    pub name: String,
+    pub text: String,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// Taille maximale du texte d'un projet (consignes + fichiers), injecté dans chaque requête.
+pub const MAX_PROJECT_CHARS: usize = 600_000;
+
+fn projects_dir(app: &AppHandle) -> R<PathBuf> {
+    ensure_dir(data_dir(app)?.join("projects"))
+}
+
+pub fn list_projects(app: &AppHandle) -> R<Vec<Project>> {
+    let mut out: Vec<Project> = fs::read_dir(projects_dir(app)?)
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+        .filter_map(|e| fs::read(e.path()).ok().and_then(|b| serde_json::from_slice(&b).ok()))
+        .collect();
+    out.sort_by_key(|p: &Project| p.name.to_lowercase());
+    Ok(out)
+}
+
+pub fn save_project(app: &AppHandle, p: &Project) -> R<()> {
+    check_id(&p.id)?;
+    if p.name.trim().is_empty() {
+        return Err("Le projet doit avoir un nom".into());
+    }
+    let size = p.instructions.chars().count() + p.files.iter().map(|f| f.text.chars().count()).sum::<usize>();
+    if size > MAX_PROJECT_CHARS {
+        return Err(format!("Projet trop volumineux ({size} caractères, max {MAX_PROJECT_CHARS})"));
+    }
+    write_json(&projects_dir(app)?.join(format!("{}.json", p.id)), p)
+}
+
+pub fn delete_project(app: &AppHandle, id: &str) -> R<()> {
+    check_id(id)?;
+    let path = projects_dir(app)?.join(format!("{id}.json"));
+    if path.exists() {
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn ssh_hosts_path(app: &AppHandle) -> R<PathBuf> {

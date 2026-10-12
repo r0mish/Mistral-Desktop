@@ -458,6 +458,28 @@ pub async fn ocr(base: &str, key: &str, name: &str, data_url: &str) -> Result<St
     Ok(pages.join("\n\n---\n\n"))
 }
 
+/// Transcription audio (Voxtral, ou tout serveur compatible `/v1/audio/transcriptions`).
+pub async fn transcribe(base: &str, key: &str, model: &str, language: &str, wav: Vec<u8>) -> Result<String, String> {
+    let part = reqwest::multipart::Part::bytes(wav)
+        .file_name("dictee.wav")
+        .mime_str("audio/wav")
+        .map_err(|e| e.to_string())?;
+    let mut form = reqwest::multipart::Form::new().text("model", model.to_owned()).part("file", part);
+    if !language.is_empty() {
+        form = form.text("language", language.to_owned());
+    }
+    let mut req = client()?.post(endpoint(base, "audio/transcriptions")).multipart(form).timeout(Duration::from_secs(300));
+    if !key.is_empty() {
+        req = req.bearer_auth(key);
+    }
+    let resp = req.send().await.map_err(|e| format!("Connexion impossible : {e}"))?;
+    if !resp.status().is_success() {
+        return Err(api_error(resp).await);
+    }
+    let v: Value = resp.json().await.map_err(|e| e.to_string())?;
+    v["text"].as_str().map(|t| t.trim().to_owned()).ok_or_else(|| "Réponse de transcription invalide".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

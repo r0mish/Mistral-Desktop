@@ -1,3 +1,4 @@
+mod audio;
 mod git;
 mod mcp;
 mod mistral;
@@ -26,6 +27,10 @@ use tools::{ToolContext, ToolDef, ToolOutput};
 const KEYRING_SERVICE: &str = "dev.r0mish.mistral-desktop";
 const KEYRING_USER: &str = "mistral-api-key";
 const ENV_API_KEY: &str = "MISTRAL_API_KEY";
+
+/// Dictée vocale en cours.
+#[derive(Default)]
+struct Dictation(Mutex<Option<audio::Recording>>);
 
 /// Requêtes en cours, annulables depuis l'interface.
 #[derive(Default)]
@@ -100,6 +105,9 @@ fn get_settings(app: AppHandle) -> CmdResult<Settings> {
 #[tauri::command]
 fn save_settings(app: AppHandle, settings: Settings) -> CmdResult<()> {
     mistral::validate_base_url(&settings.base_url)?;
+    if !settings.transcription_url.trim().is_empty() {
+        mistral::validate_base_url(settings.transcription_url.trim())?;
+    }
     storage::save_settings(&app, &settings)
 }
 
@@ -237,6 +245,71 @@ fn touch_workspace(app: AppHandle, path: String) -> CmdResult<()> {
         storage::add_workspace(&app, &path)?;
     }
     Ok(())
+}
+
+/// Fichiers de consignes (AGENTS.md…) du dossier de projet.
+#[tauri::command]
+async fn workspace_instructions(app: AppHandle, workspace: String) -> CmdResult<Vec<target::InstructionFile>> {
+    git_target(&app, &workspace)?.instruction_files().await
+}
+
+// ------------------------------------------------------------------ projets
+
+#[tauri::command]
+fn list_projects(app: AppHandle) -> CmdResult<Vec<storage::Project>> {
+    storage::list_projects(&app)
+}
+
+#[tauri::command]
+fn save_project(app: AppHandle, project: storage::Project) -> CmdResult<()> {
+    storage::save_project(&app, &project)
+}
+
+#[tauri::command]
+fn delete_project(app: AppHandle, id: String) -> CmdResult<()> {
+    storage::delete_project(&app, &id)
+}
+
+// ------------------------------------------------------------------ dictée vocale
+
+#[tauri::command]
+async fn dictation_start(dictation: State<'_, Dictation>, on_level: Channel<f32>) -> CmdResult<()> {
+    let old = dictation.0.lock().unwrap().take();
+    // L'ouverture du micro peut prendre du temps : hors du thread de l'interface.
+    let rec = tauri::async_runtime::spawn_blocking(move || {
+        if let Some(old) = old {
+            old.finish();
+        }
+        audio::start(on_level)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    if let Some(other) = dictation.0.lock().unwrap().replace(rec) {
+        other.finish();
+    }
+    Ok(())
+}
+
+/// Arrête l'enregistrement ; le transcrit si `transcribe`, sinon l'abandonne.
+#[tauri::command]
+async fn dictation_stop(app: AppHandle, dictation: State<'_, Dictation>, transcribe: bool) -> CmdResult<Option<String>> {
+    let Some(rec) = dictation.0.lock().unwrap().take() else { return Ok(None) };
+    let captured = tauri::async_runtime::spawn_blocking(move || rec.finish()).await.map_err(|e| e.to_string())?;
+    if !transcribe {
+        return Ok(None);
+    }
+    if captured.seconds < 0.4 {
+        return Err("Enregistrement trop court".into());
+    }
+    if captured.silent {
+        return Err("Aucun son capté : vérifiez le micro et l'autorisation d'accès dans les réglages du système.".into());
+    }
+    let settings = storage::load_settings(&app)?;
+    let custom = settings.transcription_url.trim();
+    // La clé Mistral n'est jamais envoyée à un serveur de transcription tiers.
+    let (base, key) = if custom.is_empty() { (settings.base_url.as_str(), api_key()?) } else { (custom, String::new()) };
+    let model = if settings.transcription_model.trim().is_empty() { "voxtral-mini-latest" } else { settings.transcription_model.trim() };
+    mistral::transcribe(base, &key, model, settings.transcription_language.trim(), captured.wav).await.map(Some)
 }
 
 // ------------------------------------------------------------------ SSH
@@ -494,6 +567,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Streams::default())
+        .manage(Dictation::default())
         .manage(Arc::new(McpManager::default()))
         .setup(|app| {
             let handle = app.handle().clone();
@@ -555,6 +629,12 @@ pub fn run() {
             git_checkout,
             git_log,
             git_init,
+            workspace_instructions,
+            list_projects,
+            save_project,
+            delete_project,
+            dictation_start,
+            dictation_stop,
         ])
         .build(tauri::generate_context!())
         .expect("erreur au lancement de l'application");

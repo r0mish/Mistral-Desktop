@@ -637,3 +637,45 @@ table.usage th { color: var(--muted); font-weight: 500; }
 #git-log { list-style: none; padding: 0; margin: 6px 0 0; }
 #git-log li { padding: 3px 0; font-size: 12.5px; }
 #git-log small { color: var(--muted); }
+
+/* ---------------------------------------------------------------- projets */
+.project-bar { display: flex; align-items: center; gap: 4px; }
+#project-select {
+  flex: 1; min-width: 0;
+  padding: 6px 8px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg-elev); font-size: 13px;
+}
+#project-select.on { border-color: color-mix(in srgb, var(--accent) 60%, transparent); color: var(--accent); font-weight: 500; }
+#conv-project { max-width: 170px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-elev); font-size: 13px; color: var(--muted); }
+#conv-project.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+.project-banner {
+  display: flex; align-items: center; gap: 12px; margin: 18px auto 0; max-width: 520px; text-align: left;
+  padding: 10px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-elev);
+}
+.project-banner > svg { width: 18px; height: 18px; color: var(--accent); flex: none; }
+.project-banner > div { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.project-banner small { color: var(--muted); font-size: 12px; }
+#project-dialog { width: min(680px, calc(100vw - 32px)); }
+#project-form { padding: 22px 24px; }
+#project-form h2 { margin: 0 0 12px; font-size: 20px; }
+#project-form .dialog-actions .spacer { flex: 1; }
+#p-delete.confirm { color: #fff; background: var(--danger); }
+#p-files { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; max-height: 220px; overflow-y: auto; }
+.p-file { display: flex; align-items: center; gap: 8px; padding: 4px 4px 4px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+.p-file span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.p-file small { color: var(--muted); white-space: nowrap; }
+#p-size.error { font-size: 12px; }
+
+/* ---------------------------------------------------------------- consignes (AGENTS.md) */
+.instr-chip svg { color: #3fb950; }
+.instr-hint { font-size: 13px; color: var(--muted); text-align: center; margin: 4px 0 14px; }
+.instr-hint .btn-ghost { display: inline-flex; margin-left: 4px; color: var(--accent); }
+
+/* ---------------------------------------------------------------- dictée vocale */
+.mic-btn.recording { color: #fff; background: var(--danger); }
+.mic-btn.recording:hover { color: #fff; background: var(--danger); filter: brightness(1.1); }
+.mic-btn.transcribing svg { animation: pulse 1s ease-in-out infinite; color: var(--accent); }
+#dictation { flex: 1; display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--danger); font-variant-numeric: tabular-nums; }
+.rec-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); animation: pulse 1.2s ease-in-out infinite; }
+.rec-level { width: 90px; height: 5px; border-radius: 3px; background: var(--bg-hover); overflow: hidden; }
+.rec-level i { display: block; height: 100%; width: 0; background: var(--danger); transition: width 0.1s linear; }

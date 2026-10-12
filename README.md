@@ -91,11 +91,9 @@ Emplacements locaux :
 
 ### Binaires
 
-Les installateurs (`.dmg`, `.msi`/`.exe`, `.deb`, `.rpm`, `.AppImage`) sont produits par GitHub Actions à chaque tag `v*` (release en brouillon) :
+Téléchargez l'installateur de votre système dans les [Releases](https://github.com/r0mish/Mistral-Desktop/releases) : `.dmg` (macOS Apple Silicon et Intel), `.exe`/`.msi` (Windows), `.deb`, `.rpm` et `.AppImage` (Linux).
 
-```bash
-git tag v0.2.0 && git push origin v0.2.0
-```
+Une nouvelle release est construite et publiée automatiquement pour tous les systèmes dès qu'une version encore jamais publiée (`version` dans `src-tauri/tauri.conf.json`) arrive sur `main` : pour sortir une version, il suffit d'incrémenter ce numéro. Elle peut aussi être lancée à la main : Actions → Release → Run workflow.
 
 Les binaires ne sont pas signés :
 - **macOS** : `xattr -cr "/Applications/Mistral Desktop.app"` au premier lancement

@@ -34,6 +34,7 @@
       </aside>
 
       <main id="main">
+        <div id="update-banner" hidden></div>
         <header id="topbar">
           <button id="toggle-sidebar" class="icon-btn" title="Afficher/masquer la barre latérale (Ctrl+B)">
             <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" /></svg>
@@ -57,6 +58,7 @@
         <section id="messages" aria-live="polite"></section>
 
         <footer id="composer-wrap">
+          <div id="activity" class="activity" hidden></div>
           <form id="composer">
             <div id="attachments"></div>
             <textarea id="input" rows="1" placeholder="Écrivez à Mistral…" autocomplete="off" spellcheck="true"></textarea>
@@ -72,6 +74,8 @@
                 <svg viewBox="0 0 24 24"><path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0zM12 18v4" /></svg><span>MCP</span>
               </button>
               <span id="hint"></span>
+              <span id="usage-info" hidden></span>
+              <button type="button" id="ctx-meter" class="ctx-meter" hidden></button>
               <button type="submit" id="send-btn" class="send" title="Envoyer">
                 <svg class="i-send" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
                 <svg class="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
@@ -93,6 +97,7 @@
             <button type="button" data-tab="tools">Outils</button>
             <button type="button" data-tab="mcp">MCP</button>
             <button type="button" data-tab="code">Code</button>
+            <button type="button" data-tab="usage">Utilisation</button>
           </nav>
         </div>
 
@@ -135,6 +140,16 @@
               </label>
               <label class="check"><input id="s-enter" type="checkbox" /> Entrée pour envoyer (Maj+Entrée = retour ligne)</label>
             </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Mises à jour</legend>
+            <label class="check"><input id="s-updates" type="checkbox" /> Vérifier au démarrage si une nouvelle version est publiée sur GitHub</label>
+            <div class="row">
+              <span class="muted small" id="update-status"></span>
+              <button type="button" id="check-update" class="btn-ghost sm">Vérifier maintenant</button>
+            </div>
+            <p class="muted small">Seule requête : <code>api.github.com/repos/r0mish/Mistral-Desktop/releases/latest</code>, sans identifiant. L'installation reste manuelle.</p>
           </fieldset>
 
           <fieldset>
@@ -198,11 +213,42 @@
             <label>Délai maximal d'une commande (secondes)
               <input id="s-timeout" type="number" min="5" max="3600" step="5" />
             </label>
+            <div class="grid2">
+              <label>Étapes max par tâche
+                <input id="s-max-steps" type="number" min="5" max="1000" step="5" />
+              </label>
+              <label>Compaction automatique du contexte (%)
+                <input id="s-compact" type="number" min="0" max="95" step="5" title="0 = jamais" />
+              </label>
+            </div>
+            <label class="check"><input id="s-auto-continue" type="checkbox" /> Relancer l'agent s'il s'arrête en annonçant une action sans l'exécuter (2 fois max par tâche)</label>
             <p class="muted small">L'agent ne peut lire et écrire que dans le dossier de projet choisi. Les commandes s'exécutent avec vos droits : en mode « Tout demander » ou « Modifs auto », chacune doit être approuvée.</p>
           </fieldset>
           <fieldset>
             <legend>Dossiers de projet autorisés</legend>
             <div id="ws-list"></div>
+          </fieldset>
+        </div>
+
+        <div class="tab" data-tab="usage" hidden>
+          <fieldset>
+            <legend>Consommation</legend>
+            <div class="row">
+              <select id="usage-period">
+                <option value="1">Aujourd'hui</option>
+                <option value="7">7 derniers jours</option>
+                <option value="30" selected>30 derniers jours</option>
+                <option value="0">Depuis le début</option>
+              </select>
+              <span class="muted small" id="usage-total"></span>
+            </div>
+            <div id="usage-table"></div>
+            <p class="muted small">Tokens exacts renvoyés par l'API ; coûts <strong>estimés</strong> d'après les tarifs ci-dessous. Votre facture fait foi : <a href="https://console.mistral.ai/usage" data-external>console.mistral.ai</a>.</p>
+          </fieldset>
+          <fieldset>
+            <legend>Tarifs ($ par million de tokens)</legend>
+            <p class="muted small">Une ligne par préfixe de modèle : <code>préfixe = entrée / sortie</code>. Le préfixe le plus long l'emporte. Vérifiez sur <a href="https://mistral.ai/pricing" data-external>mistral.ai/pricing</a>.</p>
+            <textarea id="s-prices" rows="8" spellcheck="false" class="mono"></textarea>
           </fieldset>
         </div>
 

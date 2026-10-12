@@ -3,6 +3,7 @@ import "./styles.css";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   api,
+  type ApiMessage,
   type Conversation,
   type ConversationSummary,
   type Kind,
@@ -15,8 +16,10 @@ import {
   type TextFile,
   type ToolCallRec,
   type ToolContext,
+  type UpdateInfo,
 } from "./api";
-import { needsApproval, systemPrompt, toApiMessages, toolCardHtml } from "./agent";
+import { COMPACT_PROMPT, looksUnfinished, needsApproval, systemPrompt, toApiMessages, toolCardHtml, toolLabel } from "./agent";
+import { aggregate, contextTokens, conversationUsage, fmtCost, fmtDuration, fmtTokens, today } from "./usage";
 import { escapeHtml, renderMarkdown } from "./markdown";
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
@@ -43,6 +46,10 @@ const el = {
   drop: $("#drop-overlay"),
   toast: $("#toast"),
   settings: $<HTMLDialogElement>("#settings"),
+  activity: $("#activity"),
+  ctxMeter: $<HTMLButtonElement>("#ctx-meter"),
+  usageInfo: $("#usage-info"),
+  updateBanner: $("#update-banner"),
 };
 
 const FALLBACK_MODELS = [
@@ -56,7 +63,30 @@ const FALLBACK_MODELS = [
 const MAX_TEXT_FILE = 512 * 1024;
 const MAX_PDF = 50 * 1024 * 1024;
 const MAX_IMAGE_SIDE = 2048;
-const MAX_STEPS = { chat: 12, code: 50 };
+const MAX_CHAT_STEPS = 15;
+const MAX_AUTO_CONTINUE = 2;
+const AUTO_CONTINUE_TEXT = "Continue : exécute directement les actions annoncées avec les outils, sans les décrire.";
+
+/** Ce que fait l'agent en ce moment (barre d'activité). */
+interface Activity {
+  phase: string;
+  detail?: string;
+  /** Début de la phase en cours. */
+  since: number;
+  /** Fin d'attente (nouvel essai), pour le compte à rebours. */
+  until?: number;
+  runStart: number;
+  step: number;
+  maxSteps: number;
+}
+
+/** Bilan du dernier tour de l'agent, affiché tant que rien d'autre ne se passe. */
+interface RunOutcome {
+  convId: string;
+  kind: "done" | "stopped" | "error" | "limit" | "denied" | "truncated";
+  text: string;
+  canContinue: boolean;
+}
 
 /** Brouillon de la prochaine conversation (avant le premier envoi). */
 interface Draft {
@@ -68,7 +98,7 @@ interface Draft {
 
 const state = {
   settings: null as unknown as Settings,
-  platform: { os: "linux", shell: "sh" },
+  platform: { os: "linux", shell: "sh", version: "" },
   keyConfigured: false,
   models: [] as ModelInfo[],
   convs: [] as ConversationSummary[],
@@ -83,6 +113,9 @@ const state = {
   selectedModel: "",
   risks: new Map<string, Risk>(),
   approvals: new Map<string, (d: "allow" | "always" | "deny") => void>(),
+  activity: null as Activity | null,
+  lastRun: null as RunOutcome | null,
+  update: null as UpdateInfo | null,
 };
 
 const uid = () => crypto.randomUUID();
@@ -181,7 +214,7 @@ function renderSidebar() {
       html += `<div class="group">${escapeHtml(b)}</div>`;
       bucket = b;
     }
-    const active = c.id === state.current?.id ? " active" : "";
+    const active = (c.id === state.current?.id ? " active" : "") + (state.busy && c.id === state.current?.id ? " running" : "");
     const sub = c.workspace ? `<span class="conv-sub">${escapeHtml(basename(c.workspace))}</span>` : "";
     html += `<div class="conv${active}" data-id="${c.id}">
       <span class="conv-text"><span class="conv-title">${escapeHtml(c.title)}</span>${sub}</span>
@@ -354,6 +387,8 @@ function renderChrome() {
   el.mcpToggle.title = state.mcp.map((s) => `${s.name} : ${s.state === "ready" ? `${s.tools.length} outils` : s.state}`).join("\n");
   el.input.placeholder = o.kind === "code" ? "Décrivez la tâche à réaliser dans le projet…" : "Écrivez à Mistral…";
   updateComposerState();
+  renderUsage();
+  renderActivity();
 }
 
 el.webToggle.addEventListener("click", () => setOpt("webSearch", !opts().webSearch));
@@ -412,6 +447,9 @@ function renderWelcome() {
 }
 
 function messageHtml(m: Message, next: Message | undefined): string {
+  if (m.role === "user" && m.auto) {
+    return `<div class="msg auto" data-id="${m.id}">↻ Relance automatique : l'agent avait annoncé une action sans l'exécuter</div>`;
+  }
   if (m.role === "user") {
     const imgs = (m.images ?? []).map((src) => `<img src="${src}" alt="image jointe" />`).join("");
     const files = (m.files ?? []).map((f) => `<span class="chip">${icons.file}${escapeHtml(f.name)}</span>`).join("");
@@ -439,7 +477,8 @@ function messageHtml(m: Message, next: Message | undefined): string {
     ? `<div class="msg-error">${escapeHtml(m.error)} <button class="btn-ghost sm" data-act="retry">Réessayer</button></div>`
     : "";
   const endOfTurn = !next || next.role === "user";
-  const actions = streaming || !endOfTurn
+  // Pendant l'exécution, le dernier message n'a pas encore d'actions (copier, régénérer…).
+  const actions = streaming || !endOfTurn || (state.busy && !next)
     ? ""
     : `<div class="msg-actions">
         <button class="icon-btn sm" data-act="copy" title="Copier">${icons.copy}</button>
@@ -466,7 +505,11 @@ function renderConversation() {
   renderChrome();
   const c = state.current;
   if (!c || c.messages.length === 0) return renderWelcome();
-  el.messages.innerHTML = `<div class="thread">${c.messages.map((m, i) => messageHtml(m, c.messages[i + 1])).join("")}</div>`;
+  const divider = (i: number) =>
+    c.compaction && c.compaction.upto === i
+      ? `<details class="compaction"><summary>Contexte compacté ici le ${new Date(c.compaction.at).toLocaleString("fr-FR")} : les messages précédents sont remplacés par ce résumé pour le modèle</summary><div class="md">${renderMarkdown(c.compaction.summary)}</div></details>`
+      : "";
+  el.messages.innerHTML = `<div class="thread">${c.messages.map((m, i) => divider(i) + messageHtml(m, c.messages[i + 1])).join("")}${divider(c.messages.length)}</div>`;
   scrollBottom();
 }
 
@@ -678,11 +721,158 @@ const toolCtx = (c: Conversation): ToolContext => ({
   mcp: c.mcp !== false,
 });
 
+// ---------------------------------------------------------------- activité, contexte, consommation
+
+let activityTimer = 0;
+
+function setActivity(phase: string, detail?: string, extra: Partial<Activity> = {}) {
+  const a = state.activity;
+  if (!a) return;
+  if (a.phase !== phase || a.detail !== detail) {
+    Object.assign(a, { phase, detail, since: Date.now(), until: undefined }, extra);
+  } else {
+    Object.assign(a, extra);
+  }
+  renderActivity();
+}
+
+function renderActivity() {
+  const a = state.activity;
+  const done = state.lastRun && state.lastRun.convId === state.current?.id ? state.lastRun : null;
+  if (a) {
+    const now = Date.now();
+    const wait = a.until ? ` ${Math.max(0, Math.ceil((a.until - now) / 1000))} s` : "";
+    const step = a.maxSteps > 1 ? ` · étape ${a.step}/${a.maxSteps}` : "";
+    el.activity.className = "activity busy";
+    el.activity.innerHTML = `<span class="pulse"></span><strong>${escapeHtml(a.phase)}${wait}</strong>${
+      a.detail ? `<span class="act-detail">${escapeHtml(a.detail)}</span>` : ""
+    }<span class="act-meta">${fmtDuration(now - a.since)} · total ${fmtDuration(now - a.runStart)}${step}</span><span class="act-hint">Échap pour arrêter</span>`;
+    el.activity.hidden = false;
+  } else if (done) {
+    const icon = done.kind === "done" ? "✓" : done.kind === "stopped" ? "■" : "⚠";
+    el.activity.className = `activity ${done.kind}`;
+    el.activity.innerHTML = `<span class="act-icon">${icon}</span><span>${escapeHtml(done.text)}</span>${
+      done.canContinue ? '<button type="button" class="btn-primary sm" data-continue>Continuer</button>' : ""
+    }`;
+    el.activity.hidden = false;
+  } else {
+    el.activity.hidden = true;
+  }
+}
+
+el.activity.addEventListener("click", (e) => {
+  if (!(e.target as HTMLElement).closest("[data-continue]") || state.busy) return;
+  el.input.value = "Continue.";
+  send();
+});
+
+const maxContext = (model: string) => state.models.find((m) => m.id === model)?.maxContextLength ?? null;
+
+function renderUsage() {
+  const c = state.current;
+  if (!c || !c.messages.length) {
+    el.ctxMeter.hidden = true;
+    el.usageInfo.hidden = true;
+    return;
+  }
+  const model = state.busy ? c.model : state.selectedModel || c.model;
+  const ctx = contextTokens(c, () => toApiMessages(c, systemPrompt(c, state.settings, state.platform)));
+  const max = maxContext(model);
+  const pct = max ? Math.min(100, Math.round((ctx.tokens / max) * 100)) : null;
+  el.ctxMeter.hidden = false;
+  el.ctxMeter.classList.toggle("warn", (pct ?? 0) >= 70);
+  el.ctxMeter.classList.toggle("crit", (pct ?? 0) >= 90);
+  el.ctxMeter.innerHTML = `<span class="bar"><i style="width:${pct ?? 0}%"></i></span>${
+    pct !== null ? `${pct} %` : `${ctx.exact ? "" : "≈"}${fmtTokens(ctx.tokens)}`
+  }`;
+  el.ctxMeter.title =
+    `Contexte : ${ctx.exact ? "" : "≈ "}${fmtTokens(ctx.tokens)} tokens` +
+    (max ? ` sur ${fmtTokens(max)} (${pct} %), reste ${fmtTokens(Math.max(0, max - ctx.tokens))}` : " (taille max du modèle inconnue)") +
+    (c.compaction ? `\nHistorique compacté le ${new Date(c.compaction.at).toLocaleString("fr-FR")}` : "") +
+    (state.settings.autoCompactPercent ? `\nCompaction automatique à ${state.settings.autoCompactPercent} %` : "") +
+    "\nCliquer pour compacter maintenant (résumé de l'historique)";
+  const u = conversationUsage(c, state.settings);
+  el.usageInfo.hidden = u.promptTokens + u.completionTokens === 0;
+  el.usageInfo.textContent = `${fmtTokens(u.promptTokens + u.completionTokens)} tokens · ${u.cost === null ? "coût ?" : fmtCost(u.cost)}`;
+  el.usageInfo.title =
+    `Consommation de cette conversation\nEntrée : ${u.promptTokens.toLocaleString("fr-FR")} tokens\nSortie : ${u.completionTokens.toLocaleString("fr-FR")} tokens\n` +
+    `Coût estimé : ${fmtCost(u.cost)} (tarifs modifiables dans Réglages → Utilisation)`;
+}
+
+el.ctxMeter.addEventListener("click", async () => {
+  const c = state.current;
+  if (!c || state.busy || !c.messages.length) return;
+  state.busy = { requestId: "", msgId: "", stopped: false };
+  state.activity = { phase: "", since: Date.now(), runStart: Date.now(), step: 0, maxSteps: 0 };
+  updateComposerState();
+  try {
+    await compact(c);
+    toast("Historique compacté");
+  } catch (e) {
+    toast(`Compaction impossible : ${errMsg(e)}`, true);
+  } finally {
+    state.busy = null;
+    state.activity = null;
+    updateComposerState();
+    renderConversation();
+    renderSidebar();
+  }
+});
+
+function recordUsage(conv: Conversation, model: string, promptTokens: number, completionTokens: number, extra: boolean) {
+  api.recordUsage(today(), model, promptTokens, completionTokens).catch(() => {});
+  if (extra) {
+    conv.extraUsage ??= {};
+    const u = (conv.extraUsage[model] ??= { promptTokens: 0, completionTokens: 0 });
+    u.promptTokens += promptTokens;
+    u.completionTokens += completionTokens;
+  }
+}
+
+/** Résume l'historique pour libérer le contexte ; les messages restent affichés. */
+async function compact(conv: Conversation) {
+  setActivity("Compaction du contexte…", "résumé de l'historique par le modèle");
+  const messages: ApiMessage[] = toApiMessages(conv, systemPrompt(conv, state.settings, state.platform));
+  if (messages[messages.length - 1]?.role === "tool") messages.push({ role: "assistant", content: "(Pause.)" });
+  messages.push({ role: "user", content: COMPACT_PROMPT });
+  let summary = "";
+  let failed = "";
+  // Les définitions d'outils accompagnent l'historique (qui contient des appels), mais sans appel possible.
+  const tools = await api.toolDefinitions(toolCtx(conv)).catch(() => []);
+  const requestId = uid();
+  if (state.busy) state.busy.requestId = requestId;
+  await api.chat(
+    requestId,
+    { model: conv.model, messages, temperature: 0.2, maxTokens: 4000, tools: tools.map((t) => t.definition), toolChoice: "none" },
+    (ev) => {
+      if (ev.type === "delta") summary += ev.text;
+      else if (ev.type === "usage") recordUsage(conv, conv.model, ev.promptTokens, ev.completionTokens, true);
+      else if (ev.type === "retry") setActivity("Compaction : nouvel essai dans", ev.reason, { until: Date.now() + ev.delaySecs * 1000 });
+      else if (ev.type === "done" && ev.cancelled) failed = "annulée";
+    },
+  );
+  if (failed || !summary.trim()) throw new Error(failed || "résumé vide");
+  conv.compaction = { summary: summary.trim(), upto: conv.messages.length, at: Date.now() };
+  await saveCurrent();
+}
+
+const shouldCompact = (conv: Conversation) => {
+  const pctLimit = state.settings.autoCompactPercent;
+  const max = maxContext(conv.model);
+  if (!pctLimit || !max || conv.messages.length < 4) return false;
+  if (conv.compaction && conv.compaction.upto >= conv.messages.length - 1) return false;
+  const ctx = contextTokens(conv, () => toApiMessages(conv, systemPrompt(conv, state.settings, state.platform)));
+  return ctx.tokens >= (max * pctLimit) / 100;
+};
+
+// ---------------------------------------------------------------- boucle d'agent
+
 /** Un tour du modèle en streaming. Renvoie false en cas d'erreur ou d'arrêt. */
 async function streamTurn(conv: Conversation, msg: Message, tools: Awaited<ReturnType<typeof api.toolDefinitions>>): Promise<boolean> {
   const requestId = uid();
   if (state.busy) Object.assign(state.busy, { requestId, msgId: msg.id });
   const messages = toApiMessages({ ...conv, messages: conv.messages.filter((m) => m !== msg) }, systemPrompt(conv, state.settings, state.platform));
+  setActivity("Envoi de la requête…", conv.model);
   let ok = true;
   try {
     await api.chat(
@@ -698,15 +888,24 @@ async function streamTurn(conv: Conversation, msg: Message, tools: Awaited<Retur
         switch (ev.type) {
           case "delta":
             msg.content += ev.text;
+            setActivity("Rédaction…", `≈ ${fmtTokens(Math.round(msg.content.length / 3.5))} tokens`);
             break;
           case "reasoning":
             msg.reasoning = (msg.reasoning ?? "") + ev.text;
+            setActivity("Réflexion…", `≈ ${fmtTokens(Math.round(msg.reasoning.length / 3.5))} tokens`);
             break;
           case "usage":
             msg.usage = { promptTokens: ev.promptTokens, completionTokens: ev.completionTokens };
+            recordUsage(conv, conv.model, ev.promptTokens, ev.completionTokens, false);
             break;
           case "toolCalls":
             msg.toolCalls = ev.calls.map((c) => ({ ...c, status: "queued" as const }));
+            setActivity("Préparation des actions…", `${ev.calls.length} appel(s) d'outil`);
+            break;
+          case "retry":
+            setActivity("Nouvel essai dans", `${ev.reason} · tentative ${ev.attempt + 1}/${ev.maxAttempts}`, {
+              until: Date.now() + ev.delaySecs * 1000,
+            });
             break;
           case "done":
             if (ev.cancelled) {
@@ -720,6 +919,7 @@ async function streamTurn(conv: Conversation, msg: Message, tools: Awaited<Retur
             break;
         }
         rerenderMessage(msg);
+        if (ev.type === "usage") renderUsage();
       },
     );
   } catch (e) {
@@ -745,8 +945,8 @@ function waitApproval(tc: ToolCallRec): Promise<"allow" | "always" | "deny"> {
   });
 }
 
-/** Exécute les appels d'outils d'un message. Renvoie false si la boucle doit s'arrêter. */
-async function runToolCalls(conv: Conversation, msg: Message): Promise<boolean> {
+/** Exécute les appels d'outils d'un message. Renvoie "ok", "denied" ou "stopped". */
+async function runToolCalls(conv: Conversation, msg: Message): Promise<"ok" | "denied" | "stopped"> {
   const ctx = toolCtx(conv);
   const calls = msg.toolCalls ?? [];
   for (let i = 0; i < calls.length; i++) {
@@ -759,9 +959,11 @@ async function runToolCalls(conv: Conversation, msg: Message): Promise<boolean> 
         }
       }
       rerenderMessage(msg, true);
-      return false;
     };
-    if (state.busy?.stopped) return skipRest("Non exécuté : arrêté par l'utilisateur.");
+    if (state.busy?.stopped) {
+      skipRest("Non exécuté : arrêté par l'utilisateur.");
+      return "stopped";
+    }
 
     const risk = state.risks.get(tc.name) ?? guessRisk(tc.name);
     if (needsApproval(risk, tc.name, conv.permissionMode ?? "ask", state.settings)) {
@@ -779,11 +981,14 @@ async function runToolCalls(conv: Conversation, msg: Message): Promise<boolean> 
       tc.status = "pending";
       rerenderMessage(msg, true);
       scrollBottom();
+      setActivity("En attente de votre approbation", toolLabel(tc));
+      notifyAttention();
       const decision = await waitApproval(tc);
       if (decision === "deny") {
         tc.status = "denied";
         tc.result = "L'utilisateur a refusé cette action. Arrête-toi et demande-lui comment procéder.";
-        return skipRest("Non exécuté : une action précédente a été refusée.");
+        skipRest("Non exécuté : une action précédente a été refusée.");
+        return state.busy?.stopped ? "stopped" : "denied";
       }
       if (decision === "always") {
         if (risk === "mcp") {
@@ -798,6 +1003,7 @@ async function runToolCalls(conv: Conversation, msg: Message): Promise<boolean> 
 
     tc.status = "running";
     rerenderMessage(msg, true);
+    setActivity("Exécution", toolLabel(tc));
     const requestId = uid();
     if (state.busy) Object.assign(state.busy, { requestId, msgId: msg.id });
     try {
@@ -812,15 +1018,30 @@ async function runToolCalls(conv: Conversation, msg: Message): Promise<boolean> 
     rerenderMessage(msg, true);
   }
   await saveCurrent();
-  return !state.busy?.stopped;
+  renderUsage();
+  return state.busy?.stopped ? "stopped" : "ok";
+}
+
+/** Attire l'attention si la fenêtre n'a pas le focus (approbation requise). */
+function notifyAttention() {
+  if (document.hasFocus()) return;
+  document.title = "⏸ Approbation requise — Mistral Desktop";
+  window.addEventListener("focus", () => (document.title = "Mistral Desktop"), { once: true });
 }
 
 async function runAgent() {
   const conv = state.current;
   if (!conv) return;
   conv.model = state.selectedModel;
+  const maxSteps = conv.kind === "code" ? Math.max(5, state.settings.maxSteps || 100) : MAX_CHAT_STEPS;
+  const runStart = Date.now();
   state.busy = { requestId: "", msgId: "", stopped: false };
+  state.lastRun = null;
+  state.activity = { phase: "Préparation…", since: runStart, runStart, step: 1, maxSteps };
+  clearInterval(activityTimer);
+  activityTimer = window.setInterval(renderActivity, 1000);
   updateComposerState();
+  renderSidebar();
 
   let tools: Awaited<ReturnType<typeof api.toolDefinitions>> = [];
   try {
@@ -832,10 +1053,28 @@ async function runAgent() {
 
   renderConversation();
   await saveCurrent();
+  let outcome: Omit<RunOutcome, "convId"> = { kind: "done", text: "", canContinue: false };
+  let steps = 0;
+  let nudges = 0;
   try {
-    for (let step = 0; step < MAX_STEPS[conv.kind]; step++) {
+    for (let step = 1; ; step++) {
+      if (step > maxSteps) {
+        outcome = { kind: "limit", text: `Limite de ${maxSteps} étapes atteinte (réglable dans Réglages → Code).`, canContinue: true };
+        break;
+      }
+      steps = step;
+      if (state.activity) state.activity.step = step;
+      if (shouldCompact(conv)) {
+        try {
+          await compact(conv);
+          renderConversation();
+        } catch (e) {
+          toast(`Compaction automatique impossible : ${errMsg(e)}`, true);
+        }
+      }
       const msg: Message = { id: uid(), role: "assistant", content: "", model: conv.model, createdAt: Date.now() };
       conv.messages.push(msg);
+      if (state.busy) state.busy.msgId = msg.id;
       rerenderMessage(msg, true);
       const ok = await streamTurn(conv, msg, tools);
       if (!msg.content && !msg.reasoning && !msg.toolCalls?.length && !msg.error && !msg.cancelled) {
@@ -843,19 +1082,55 @@ async function runAgent() {
       }
       rerenderMessage(msg, true);
       await saveCurrent();
-      if (!ok || !msg.toolCalls?.length) break;
-      if (!(await runToolCalls(conv, msg))) break;
-      if (step === MAX_STEPS[conv.kind] - 1) {
-        toast(`Limite de ${MAX_STEPS[conv.kind]} étapes atteinte : envoyez « continue » pour poursuivre.`);
+      renderUsage();
+      if (!ok) {
+        outcome = state.busy?.stopped || msg.cancelled
+          ? { kind: "stopped", text: "Arrêté à votre demande.", canContinue: true }
+          : msg.error?.startsWith("Réponse tronquée")
+            ? { kind: "truncated", text: "Réponse coupée : limite de tokens de sortie atteinte (réglage « Tokens max »).", canContinue: true }
+            : { kind: "error", text: `Interrompu par une erreur : ${msg.error ?? "inconnue"}`, canContinue: true };
+        break;
+      }
+      if (!msg.toolCalls?.length) {
+        // Réponse finale… ou action annoncée sans être exécutée : relance automatique.
+        if (conv.kind === "code" && state.settings.autoContinue && nudges < MAX_AUTO_CONTINUE && looksUnfinished(msg.content)) {
+          nudges++;
+          conv.messages.push({ id: uid(), role: "user", content: AUTO_CONTINUE_TEXT, createdAt: Date.now(), auto: true });
+          renderConversation();
+          continue;
+        }
+        break;
+      }
+      const res = await runToolCalls(conv, msg);
+      if (res === "denied") {
+        outcome = { kind: "denied", text: "En pause : vous avez refusé une action. Donnez vos consignes pour continuer.", canContinue: false };
+        break;
+      }
+      if (res === "stopped") {
+        outcome = { kind: "stopped", text: "Arrêté à votre demande.", canContinue: true };
+        break;
       }
     }
   } finally {
+    const elapsed = fmtDuration(Date.now() - runStart);
+    if (outcome.kind === "done") {
+      const u = conversationUsage(conv, state.settings);
+      outcome.text = `Terminé en ${elapsed} · ${steps} étape${steps > 1 ? "s" : ""} · ${fmtTokens(u.promptTokens + u.completionTokens)} tokens dans la conversation`;
+    } else {
+      outcome.text += ` (${elapsed}, ${steps} étape${steps > 1 ? "s" : ""})`;
+    }
+    state.lastRun = { ...outcome, convId: conv.id };
     state.busy = null;
+    state.activity = null;
+    clearInterval(activityTimer);
     for (const resolve of state.approvals.values()) resolve("deny");
     state.approvals.clear();
     const last = conv.messages[conv.messages.length - 1];
     if (last) rerenderMessage(last, true);
     updateComposerState();
+    renderActivity();
+    renderSidebar();
+    renderUsage();
     await saveCurrent();
   }
 }
@@ -894,6 +1169,7 @@ el.input.addEventListener("keydown", (e) => {
 });
 el.modelSelect.addEventListener("change", () => {
   state.selectedModel = el.modelSelect.value;
+  renderUsage();
 });
 el.exportBtn.addEventListener("click", async () => {
   if (!state.current) return;
@@ -1055,7 +1331,95 @@ const s = {
   mcpAllowed: $("#mcp-allowed"),
   wsList: $("#ws-list"),
   error: $("#settings-error"),
+  updates: $<HTMLInputElement>("#s-updates"),
+  updateStatus: $("#update-status"),
+  maxSteps: $<HTMLInputElement>("#s-max-steps"),
+  compact: $<HTMLInputElement>("#s-compact"),
+  autoContinue: $<HTMLInputElement>("#s-auto-continue"),
+  usagePeriod: $<HTMLSelectElement>("#usage-period"),
+  usageTotal: $("#usage-total"),
+  usageTable: $("#usage-table"),
+  prices: $<HTMLTextAreaElement>("#s-prices"),
 };
+
+const pricesToText = (p: Settings["prices"]) =>
+  Object.entries(p)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([k, [i, o]]) => `${k} = ${i} / ${o}`)
+    .join("\n");
+
+function parsePrices(text: string): Settings["prices"] {
+  const out: Settings["prices"] = {};
+  for (const [n, raw] of text.split("\n").entries()) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const m = line.match(/^([\w.:-]+)\s*=\s*([\d.,]+)\s*\/\s*([\d.,]+)$/);
+    if (!m) throw new Error(`Tarifs, ligne ${n + 1} : format attendu « préfixe = entrée / sortie »`);
+    out[m[1]] = [Number(m[2].replace(",", ".")), Number(m[3].replace(",", "."))];
+  }
+  return out;
+}
+
+async function renderUsageTab() {
+  const log = await api.getUsage().catch(() => ({}));
+  const { rows, total, unknown } = aggregate(log, Number(s.usagePeriod.value), state.settings);
+  s.usageTotal.textContent = rows.length ? `Total estimé : ${fmtCost(total)}${unknown ? " (+ modèles sans tarif)" : ""}` : "";
+  s.usageTable.innerHTML = rows.length
+    ? `<table class="usage"><thead><tr><th>Modèle</th><th>Requêtes</th><th>Entrée</th><th>Sortie</th><th>Coût estimé</th></tr></thead><tbody>${rows
+        .map((r) => `<tr><td><code>${escapeHtml(r.model)}</code></td><td>${r.requests}</td><td>${fmtTokens(r.prompt)}</td><td>${fmtTokens(r.completion)}</td><td>${r.cost === null ? "tarif inconnu" : fmtCost(r.cost)}</td></tr>`)
+        .join("")}</tbody></table>`
+    : '<p class="muted small">Aucune consommation enregistrée sur cette période.</p>';
+}
+s.usagePeriod.addEventListener("change", renderUsageTab);
+
+// ---------------------------------------------------------------- mises à jour
+
+function renderUpdateBanner() {
+  const u = state.update;
+  if (!u?.available || u.latest === state.settings.skippedVersion) {
+    el.updateBanner.hidden = true;
+    return;
+  }
+  el.updateBanner.innerHTML = `<span>🎉 <strong>Mistral Desktop ${escapeHtml(u.latest)}</strong> est disponible (vous avez ${escapeHtml(u.current)}).</span>
+    <span class="row">
+      <button type="button" class="btn-primary sm" data-upd="download">${u.assetName ? `Télécharger ${escapeHtml(u.assetName.replace(/^.*\./, "."))}` : "Télécharger"}</button>
+      <button type="button" class="btn-ghost sm" data-upd="notes">Nouveautés</button>
+      <button type="button" class="btn-ghost sm" data-upd="skip">Ignorer cette version</button>
+      <button type="button" class="icon-btn sm" data-upd="close" title="Fermer">×</button>
+    </span>`;
+  el.updateBanner.hidden = false;
+}
+
+el.updateBanner.addEventListener("click", (e) => {
+  const action = (e.target as HTMLElement).closest<HTMLElement>("[data-upd]")?.dataset.upd;
+  const u = state.update;
+  if (!action || !u) return;
+  if (action === "download") openUrl(u.assetUrl ?? u.releaseUrl).catch((err) => toast(errMsg(err), true));
+  if (action === "notes") openUrl(u.releaseUrl).catch((err) => toast(errMsg(err), true));
+  if (action === "skip") {
+    state.settings.skippedVersion = u.latest;
+    api.saveSettings(state.settings).catch(() => {});
+  }
+  if (action === "skip" || action === "close") el.updateBanner.hidden = true;
+});
+
+async function checkUpdate(manual = false) {
+  try {
+    state.update = await api.checkUpdate();
+    const u = state.update;
+    s.updateStatus.textContent = u.available
+      ? `Version ${u.latest} disponible (installée : ${u.current}).`
+      : `À jour (version ${u.current}).`;
+    if (manual && u.available && u.latest === state.settings.skippedVersion) {
+      state.settings.skippedVersion = "";
+    }
+    renderUpdateBanner();
+  } catch (e) {
+    s.updateStatus.textContent = `Vérification impossible : ${errMsg(e)}`;
+    if (manual) toast(`Vérification impossible : ${errMsg(e)}`, true);
+  }
+}
+$("#check-update").addEventListener("click", () => checkUpdate(true));
 
 const MCP_EXAMPLE = `{
   "mcpServers": {
@@ -1179,6 +1543,13 @@ async function openSettings(tab = "general") {
   s.webDefault.checked = st.webSearchDefault;
   s.pdf.value = st.pdfMode;
   s.timeout.value = String(st.commandTimeout);
+  s.maxSteps.value = String(st.maxSteps);
+  s.compact.value = String(st.autoCompactPercent);
+  s.autoContinue.checked = st.autoContinue;
+  s.updates.checked = st.checkUpdates;
+  s.prices.value = pricesToText(st.prices ?? {});
+  if (!s.updateStatus.textContent) s.updateStatus.textContent = `Version installée : ${state.platform.version}`;
+  renderUsageTab();
   s.mcp.value = await api.mcpGetConfig().catch(() => "");
   s.error.hidden = true;
   $("#data-dir").textContent = await api.dataDir().catch(() => "?");
@@ -1234,7 +1605,19 @@ $("#settings-form").addEventListener("submit", async (e) => {
     pdfMode: s.pdf.value as Settings["pdfMode"],
     codeModel: s.codeModel.value,
     commandTimeout: Math.max(5, Number(s.timeout.value) || 120),
+    maxSteps: Math.max(5, Number(s.maxSteps.value) || 100),
+    autoCompactPercent: Math.min(95, Math.max(0, Number(s.compact.value) || 0)),
+    autoContinue: s.autoContinue.checked,
+    checkUpdates: s.updates.checked,
+    prices: state.settings.prices,
   };
+  try {
+    next.prices = parsePrices(s.prices.value);
+  } catch (err) {
+    s.error.textContent = errMsg(err);
+    s.error.hidden = false;
+    return showTab("usage");
+  }
   if (next.webSearchProvider === "searxng" && !/^https?:\/\//.test(next.searxngUrl)) {
     s.error.textContent = "Indiquez l'URL de votre instance SearXNG (onglet Outils).";
     s.error.hidden = false;
@@ -1317,6 +1700,11 @@ async function init() {
   pollMcp();
   el.input.focus();
   await loadModels();
+  renderUsage();
+  if (state.settings.checkUpdates) {
+    checkUpdate();
+    window.setInterval(() => state.settings.checkUpdates && checkUpdate(), 6 * 3600 * 1000);
+  }
 }
 
 init();

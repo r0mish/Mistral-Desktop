@@ -63,6 +63,14 @@ Configuration au **format de Claude Desktop** (Réglages → MCP) :
 - Sous macOS/Linux, le `PATH` de votre shell est récupéré au démarrage (Homebrew, nvm, `~/.local/bin`…)
 - Non pris en charge : authentification OAuth des serveurs distants (utilisez un en-tête `Authorization`), sampling, elicitation
 
+### Suivi de l'agent
+- **Barre d'activité** au-dessus de la saisie : phase en cours (envoi, réflexion, rédaction, exécution d'un outil, attente de votre approbation, nouvel essai), chronomètre et numéro d'étape. En fin de tâche : bilan (« Terminé en 2 min · 12 étapes ») ou raison de l'arrêt, avec un bouton **Continuer**
+- **Résilience** : nouvel essai automatique (jusqu'à 5 fois, en respectant `Retry-After`) sur les erreurs 429 et 5xx et sur les coupures réseau ; un flux muet pendant 120 s est interrompu au lieu de bloquer indéfiniment
+- **Relance automatique** quand l'agent annonce une action (« Je vais maintenant… ») sans l'exécuter (2 fois max par tâche, désactivable)
+- **Jauge de contexte** (tokens utilisés / taille max du modèle) ; **compaction automatique** à 80 % : l'historique est résumé par le modèle, les messages restent affichés. Clic sur la jauge pour compacter à la main. Les anciens résultats d'outils sont tronqués dans les requêtes pour économiser le contexte
+- **Consommation** : tokens et coût estimé par conversation, historique par jour et par modèle (Réglages → Utilisation), tarifs modifiables
+- **Mises à jour** : détection des nouvelles releases GitHub, bandeau avec téléchargement direct de l'installateur adapté à votre système (désactivable)
+
 ### Raccourcis
 `Ctrl/⌘+N` nouvelle conversation · `Ctrl/⌘+1` / `2` Chat / Code · `Ctrl/⌘+K` recherche · `Ctrl/⌘+B` barre latérale · `Ctrl/⌘+,` réglages · `Échap` arrêter
 
@@ -70,9 +78,9 @@ Configuration au **format de Claude Desktop** (Réglages → MCP) :
 
 | Point | Choix |
 |---|---|
-| Télémétrie | Aucune. |
+| Télémétrie | Aucune. La seule requête non sollicitée est la vérification de mise à jour (`api.github.com`, sans identifiant), désactivable. |
 | Clé API | **Trousseau du système** (Keychain, Credential Manager, Secret Service/KWallet). Repli : variable `MISTRAL_API_KEY`. |
-| Appels réseau | Faits **côté Rust** ; la clé n'est jamais exposée à la WebView. Destinations : l'URL d'API configurée, l'instance SearXNG éventuelle, les pages lues par `fetch_url`, vos serveurs MCP. |
+| Appels réseau | Faits **côté Rust** (magasin de certificats du système, compatible avec les proxys d'entreprise) ; la clé n'est jamais exposée à la WebView. Destinations : l'URL d'API configurée, l'instance SearXNG éventuelle, les pages lues par `fetch_url`, vos serveurs MCP. |
 | Conversations | Fichiers JSON locaux, jamais synchronisés. |
 | WebView | CSP stricte (aucune ressource distante, donc aucun pixel de suivi), HTML assaini par DOMPurify, liens ouverts dans le navigateur du système. |
 | Agent de code | Dossiers autorisés uniquement via la boîte de dialogue native ; écritures et commandes soumises à approbation par défaut. ⚠️ En mode **Autonome**, les commandes s'exécutent avec vos droits sans confirmation : à réserver aux projets de confiance (le contenu lu sur le web ou dans le dépôt peut tenter d'influencer le modèle). |

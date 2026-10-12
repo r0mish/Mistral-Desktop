@@ -500,3 +500,64 @@ textarea.mono { font: 12.5px/1.5 var(--mono) !important; width: 100%; }
 #mcp-allowed .chip button { border: none; background: transparent; font-size: 14px; }
 .ws-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; }
 .ws-row code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------------------------------------------------------------- activité de l'agent */
+.activity {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 0 0 8px; padding: 7px 14px;
+  border: 1px solid var(--border); border-radius: 12px;
+  background: var(--bg-elev); font-size: 13px;
+}
+.activity.busy { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.activity strong { font-weight: 600; }
+.act-detail { color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
+.act-meta { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.act-hint { color: var(--muted); font-size: 12px; opacity: 0.7; white-space: nowrap; }
+.activity .act-icon { font-weight: 700; }
+.activity.done .act-icon { color: #2ea043; }
+.activity.error, .activity.truncated, .activity.limit { border-color: color-mix(in srgb, #d29922 50%, var(--border)); }
+.activity.error .act-icon, .activity.truncated .act-icon, .activity.limit .act-icon, .activity.denied .act-icon { color: #d29922; }
+.activity .btn-primary { margin-left: auto; }
+.pulse { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); flex-shrink: 0; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.75); } }
+
+/* ---------------------------------------------------------------- contexte et consommation */
+#usage-info { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; cursor: default; }
+.ctx-meter {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 8px; border: 1px solid var(--border); border-radius: 8px;
+  background: transparent; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.ctx-meter:hover { color: var(--text); border-color: var(--accent); }
+.ctx-meter .bar { width: 44px; height: 6px; border-radius: 3px; background: var(--bg-active); overflow: hidden; }
+.ctx-meter .bar i { display: block; height: 100%; background: #2ea043; border-radius: 3px; }
+.ctx-meter.warn .bar i { background: #d29922; }
+.ctx-meter.crit .bar i { background: var(--danger); }
+.ctx-meter.crit { color: var(--danger); }
+
+.msg.auto { text-align: center; font-size: 12px; color: var(--muted); margin: -8px 0 14px; }
+details.compaction {
+  margin: 10px 0 22px; padding: 8px 14px;
+  border: 1px dashed var(--border); border-radius: 10px; font-size: 13px; color: var(--muted);
+}
+details.compaction summary { cursor: pointer; }
+details.compaction .md { margin-top: 8px; color: var(--text); }
+
+.conv.running .conv-title::before {
+  content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; vertical-align: middle;
+  border-radius: 50%; background: var(--accent); animation: pulse 1.2s ease-in-out infinite;
+}
+
+table.usage { width: 100%; border-collapse: collapse; font-size: 13px; margin: 8px 0; font-variant-numeric: tabular-nums; }
+table.usage th, table.usage td { padding: 5px 8px; border-bottom: 1px solid var(--border); text-align: right; }
+table.usage th:first-child, table.usage td:first-child { text-align: left; }
+table.usage th { color: var(--muted); font-weight: 500; }
+#usage-period { padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); }
+
+/* ---------------------------------------------------------------- mise à jour */
+#update-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  padding: 8px 14px; font-size: 13.5px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+}

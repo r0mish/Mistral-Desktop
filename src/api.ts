@@ -123,6 +123,8 @@ export interface Project {
   name: string;
   instructions: string;
   files: ProjectFile[];
+  /** Dossier de travail des sessions de code : chemin local ou `ssh:<hôte>:<chemin>`. */
+  workspace?: string | null;
   createdAt: number;
   updatedAt: number;
 }

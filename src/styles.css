@@ -679,3 +679,19 @@ table.usage th { color: var(--muted); font-weight: 500; }
 .rec-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); animation: pulse 1.2s ease-in-out infinite; }
 .rec-level { width: 90px; height: 5px; border-radius: 3px; background: var(--bg-hover); overflow: hidden; }
 .rec-level i { display: block; height: 100%; width: 0; background: var(--danger); transition: width 0.1s linear; }
+.p-ws-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.p-ws-label { font-size: 13px; color: var(--muted); }
+.p-ws { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+#p-ws-current { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+#p-ws-current small { color: var(--muted); margin-left: 4px; }
+.p-ws .row { flex: none; gap: 4px; }
+.ws-current .btn-ghost svg { width: 14px; height: 14px; }
+#project-form fieldset { min-width: 0; }
+/* Barre du haut chargée : les puces rétrécissent avant le titre. */
+#conv-title { min-width: 60px; }
+#topbar > .chip-btn { flex-shrink: 1; min-width: 72px; }
+#topbar > .git-btn { min-width: 0; flex-shrink: 0; }
+#topbar #model-select { max-width: 200px; }
+#topbar #conv-project { max-width: 140px; }
+#topbar > .instr-chip { min-width: 0; flex-shrink: 0; padding: 4px 7px; }
+.instr-chip span { display: none; }

@@ -19,6 +19,7 @@ Client de bureau **léger, open source et sans télémétrie** pour l'API [Mistr
 ### Projets
 Comme dans Claude Desktop : des conversations regroupées qui partagent des **consignes** et des **fichiers de référence** (texte, Markdown, code, CSV, PDF).
 - Sélecteur en haut de la barre latérale : filtre les conversations ; les nouvelles conversations sont rattachées au projet affiché
+- **Dossier de travail** du projet : dossier local ou dossier d'un **serveur SSH**. Les sessions de code du projet s'y ouvrent directement (en mode Code, « Nouveau projet » propose le dossier ouvert)
 - Une conversation peut changer de projet à tout moment (menu en haut de la fenêtre)
 - Consignes et fichiers sont ajoutés à l'invite système de chaque message du projet (estimation du nombre de tokens affichée) ; tout est stocké localement dans `projects/`
 

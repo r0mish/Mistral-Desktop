@@ -20,6 +20,7 @@ export interface Settings {
   autoCompactPercent: number;
   checkUpdates: boolean;
   skippedVersion: string;
+  shell: "auto" | "bash" | "pwsh" | "powershell";
   /** $ par million de tokens : préfixe de modèle → [entrée, sortie]. */
   prices: Record<string, [number, number]>;
 }
@@ -182,7 +183,8 @@ export const api = {
   exportConversation: (id: string) => invoke<boolean>("export_conversation", { id }),
   dataDir: () => invoke<string>("data_dir"),
   cancel: (requestId: string) => invoke<void>("cancel_stream", { requestId }),
-  platform: () => invoke<{ os: string; shell: string; version: string }>("platform_info"),
+  platform: () =>
+    invoke<{ os: string; shell: string; shellPath: string; shellGuidance: string; version: string }>("platform_info"),
   recordUsage: (day: string, model: string, promptTokens: number, completionTokens: number) =>
     invoke<void>("record_usage", { day, model, promptTokens, completionTokens }),
   getUsage: () => invoke<UsageLog>("get_usage"),

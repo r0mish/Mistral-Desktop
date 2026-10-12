@@ -42,6 +42,8 @@ pub struct Settings {
     pub auto_compact_percent: u32,
     pub check_updates: bool,
     pub skipped_version: String,
+    /// Shell de l'agent : « auto », « bash » (Git Bash), « pwsh » ou « powershell » (Windows).
+    pub shell: String,
     /// Tarifs en $ par million de tokens : « préfixe de modèle » → [entrée, sortie].
     pub prices: std::collections::BTreeMap<String, [f64; 2]>,
 }
@@ -88,6 +90,7 @@ impl Default for Settings {
             auto_compact_percent: 80,
             check_updates: true,
             skipped_version: String::new(),
+            shell: "auto".into(),
             prices: default_prices(),
         }
     }

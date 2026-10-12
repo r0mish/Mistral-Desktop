@@ -221,6 +221,15 @@
                 <input id="s-compact" type="number" min="0" max="95" step="5" title="0 = jamais" />
               </label>
             </div>
+            <label id="s-shell-wrap">Shell pour les commandes (Windows)
+              <select id="s-shell">
+                <option value="auto">Automatique : Git Bash, sinon PowerShell 7, sinon PowerShell 5.1</option>
+                <option value="bash">Git Bash</option>
+                <option value="pwsh">PowerShell 7 (pwsh)</option>
+                <option value="powershell">Windows PowerShell 5.1</option>
+              </select>
+            </label>
+            <p class="muted small" id="s-shell-info"></p>
             <label class="check"><input id="s-auto-continue" type="checkbox" /> Relancer l'agent s'il s'arrête en annonçant une action sans l'exécuter (2 fois max par tâche)</label>
             <p class="muted small">L'agent ne peut lire et écrire que dans le dossier de projet choisi. Les commandes s'exécutent avec vos droits : en mode « Tout demander » ou « Modifs auto », chacune doit être approuvée.</p>
           </fieldset>

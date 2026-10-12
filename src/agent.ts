@@ -19,6 +19,7 @@ How to work:
 - Commands are non-interactive and time-limited: never start servers, watchers or REPLs; pass flags such as --yes when needed.
 - Never run destructive commands (rm -rf, git reset --hard, git push --force, dropping databases…) unless the user explicitly asked for it.
 - If the user refuses an action, stop and ask how to proceed instead of trying a workaround.
+- Work autonomously until the task is fully done. Never end your turn by announcing what you are about to do ("I will now…", "Je vais…"): call the tool directly in the same turn. Only end your turn when the task is complete or when you genuinely need the user's input.
 - Be concise. When finished, summarize what you changed and how you verified it.
 - Always answer in the user's language (French by default).`;
 }
@@ -37,10 +38,33 @@ export function systemPrompt(conv: Conversation, settings: Settings, platform: {
   return parts.join("\n\n");
 }
 
+/** Au-delà de ces derniers tours d'outils, les anciens résultats sont tronqués dans les requêtes. */
+const KEEP_FULL_TOOL_TURNS = 8;
+const OLD_RESULT_CHARS = 1500;
+
+export const COMPACT_PROMPT =
+  "Le contexte de cette conversation devient trop long. Rédige un résumé complet qui permettra de reprendre le travail sans l'historique : " +
+  "objectif de l'utilisateur et contraintes exprimées, décisions prises, fichiers lus et modifiés (chemins exacts) avec la nature des changements, " +
+  "commandes lancées et leurs résultats importants, état actuel, problèmes en suspens et prochaines étapes. " +
+  "Sois factuel et précis, en Markdown, sans appeler d'outil.";
+
 export function toApiMessages(conv: Conversation, system: string): ApiMessage[] {
   const out: ApiMessage[] = [];
   if (system) out.push({ role: "system", content: system });
-  for (const m of conv.messages) {
+  const start = conv.compaction ? Math.min(conv.compaction.upto, conv.messages.length) : 0;
+  let pendingSummary = conv.compaction
+    ? `[Contexte compacté : résumé de la conversation précédente]\n\n${conv.compaction.summary}`
+    : "";
+  const msgs = conv.messages.slice(start);
+  // Indice du premier tour d'outils dont les résultats restent complets.
+  const toolTurns = msgs.map((m, i) => (m.toolCalls?.length ? i : -1)).filter((i) => i >= 0);
+  const keepFrom = toolTurns.length > KEEP_FULL_TOOL_TURNS ? toolTurns[toolTurns.length - KEEP_FULL_TOOL_TURNS] : 0;
+  if (pendingSummary && msgs[0]?.role !== "user") {
+    // Compaction en cours de tâche : le résumé tient lieu de dernière consigne.
+    out.push({ role: "user", content: `${pendingSummary}\n\nReprends la tâche en cours là où tu t'es arrêté.` });
+    pendingSummary = "";
+  }
+  for (const [idx, m] of msgs.entries()) {
     if (m.role === "user") {
       // L'API Mistral refuse un message « user » juste après des résultats d'outils.
       if (out.length && out[out.length - 1].role === "tool") {
@@ -48,6 +72,10 @@ export function toApiMessages(conv: Conversation, system: string): ApiMessage[] 
       }
       let content = m.content;
       for (const f of m.files ?? []) content += `\n\n<fichier nom="${f.name}">\n${f.text}\n</fichier>`;
+      if (pendingSummary) {
+        content = `${pendingSummary}\n\n---\n\n${content}`;
+        pendingSummary = "";
+      }
       out.push({ role: "user", content, images: m.images ?? [] });
       continue;
     }
@@ -59,7 +87,11 @@ export function toApiMessages(conv: Conversation, system: string): ApiMessage[] 
         toolCalls: calls.map(({ id, name, arguments: a }) => ({ id, name, arguments: a })),
       });
       for (const c of calls) {
-        out.push({ role: "tool", toolCallId: c.id, name: c.name, content: c.result ?? "Non exécuté (interrompu)." });
+        let content = c.result ?? "Non exécuté (interrompu).";
+        if (idx < keepFrom && content.length > OLD_RESULT_CHARS) {
+          content = `${content.slice(0, OLD_RESULT_CHARS)}\n[… résultat ancien tronqué pour économiser le contexte ; relance l'outil si besoin]`;
+        }
+        out.push({ role: "tool", toolCallId: c.id, name: c.name, content });
       }
     } else if (m.content.trim()) {
       out.push({ role: "assistant", content: m.content });
@@ -106,6 +138,22 @@ const ICONS: Record<string, string> = {
   term: '<svg viewBox="0 0 24 24"><path d="m4 17 6-5-6-5M12 19h8"/></svg>',
   plug: '<svg viewBox="0 0 24 24"><path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0zM12 18v4"/></svg>',
 };
+
+/** L'agent s'arrête-t-il en annonçant une action au lieu de l'exécuter ? */
+export function looksUnfinished(text: string): boolean {
+  const tail = text.trim().slice(-400);
+  if (!tail || tail.endsWith("?")) return false;
+  if (tail.endsWith(":")) return true;
+  const lastPara = tail.split(/\n\s*\n/).pop() ?? tail;
+  return /\b(je vais|je m'en occupe|laisse[- ]moi|commençons|procédons|passons (maintenant )?à|let me|i'll|i will|now i|next,? i|let's)\b/i.test(lastPara);
+}
+
+/** Libellé texte (sans HTML) d'un appel d'outil, pour la barre d'activité. */
+export function toolLabel(tc: ToolCallRec): string {
+  const div = document.createElement("div");
+  div.innerHTML = toolTitle(tc).html;
+  return div.textContent ?? tc.name;
+}
 
 export function toolTitle(tc: ToolCallRec): { icon: string; html: string } {
   const a = parse(tc.arguments);

@@ -43,6 +43,8 @@ pub struct ChatRequest {
     /// Définitions d'outils au format Mistral (`[{type: "function", function: {...}}]`).
     #[serde(default)]
     pub tools: Vec<Value>,
+    /// « auto » par défaut ; « none » pour interdire les appels (résumé de contexte).
+    pub tool_choice: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -53,6 +55,9 @@ pub enum StreamEvent {
     #[serde(rename_all = "camelCase")]
     Usage { prompt_tokens: u64, completion_tokens: u64 },
     ToolCalls { calls: Vec<ToolCall> },
+    /// Nouvel essai après une erreur temporaire (429, 5xx, réseau).
+    #[serde(rename_all = "camelCase")]
+    Retry { attempt: u32, max_attempts: u32, delay_secs: u64, reason: String },
     #[serde(rename_all = "camelCase")]
     Done { finish_reason: Option<String>, cancelled: bool },
 }
@@ -64,6 +69,15 @@ pub struct ModelInfo {
     pub description: Option<String>,
     pub vision: bool,
     pub max_context_length: Option<u64>,
+}
+
+/// Délai max avant les en-têtes de réponse, puis entre deux morceaux du flux.
+const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(180);
+const STALL_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_ATTEMPTS: u32 = 5;
+
+fn is_retryable(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504 | 529)
 }
 
 pub fn validate_base_url(url: &str) -> Result<(), String> {
@@ -223,26 +237,54 @@ pub async fn chat_stream(
     }
     if !req.tools.is_empty() {
         body["tools"] = json!(req.tools);
-        body["tool_choice"] = json!("auto");
+        body["tool_choice"] = json!(req.tool_choice.as_deref().unwrap_or("auto"));
     }
 
-    let send = client()?
-        .post(endpoint(base, "chat/completions"))
-        .bearer_auth(key)
-        .header("Accept", "text/event-stream")
-        .json(&body)
-        .send();
-
-    let resp = tokio::select! {
-        r = send => r.map_err(|e| format!("Connexion impossible : {e}"))?,
-        _ = cancel.notified() => {
-            let _ = on_event.send(StreamEvent::Done { finish_reason: None, cancelled: true });
-            return Ok(());
+    let client = client()?;
+    let mut attempt = 0;
+    let resp = loop {
+        attempt += 1;
+        let send = client
+            .post(endpoint(base, "chat/completions"))
+            .bearer_auth(key)
+            .header("Accept", "text/event-stream")
+            .json(&body)
+            .send();
+        let outcome = tokio::select! {
+            r = tokio::time::timeout(FIRST_BYTE_TIMEOUT, send) => r,
+            _ = cancel.notified() => {
+                let _ = on_event.send(StreamEvent::Done { finish_reason: None, cancelled: true });
+                return Ok(());
+            }
+        };
+        // Erreur temporaire : on réessaie avec une attente croissante.
+        let (reason, retry_after) = match outcome {
+            Ok(Ok(r)) if r.status().is_success() => break r,
+            Ok(Ok(r)) if is_retryable(r.status()) && attempt < MAX_ATTEMPTS => {
+                let ra = r
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.trim().parse::<u64>().ok());
+                let status = r.status();
+                (if status.as_u16() == 429 { "limite de requêtes atteinte (429)".to_string() } else { format!("serveur indisponible ({status})") }, ra)
+            }
+            Ok(Ok(r)) => return Err(api_error(r).await),
+            Ok(Err(e)) if attempt < MAX_ATTEMPTS && (e.is_connect() || e.is_timeout() || e.is_request()) => (format!("connexion impossible : {e}"), None),
+            Ok(Err(e)) => return Err(format!("Connexion impossible : {e}")),
+            Err(_) if attempt < MAX_ATTEMPTS => ("pas de réponse du serveur".to_string(), None),
+            Err(_) => return Err(format!("Le serveur ne répond pas (délai de {} s dépassé)", FIRST_BYTE_TIMEOUT.as_secs())),
+        };
+        let delay = retry_after.unwrap_or(2u64.pow(attempt)).clamp(1, 60);
+        let _ = on_event.send(StreamEvent::Retry { attempt, max_attempts: MAX_ATTEMPTS, delay_secs: delay, reason });
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
+            _ = cancel.notified() => {
+                let _ = on_event.send(StreamEvent::Done { finish_reason: None, cancelled: true });
+                return Ok(());
+            }
         }
     };
-    if !resp.status().is_success() {
-        return Err(api_error(resp).await);
-    }
 
     let mut stream = resp.bytes_stream();
     let mut buf: Vec<u8> = Vec::new();
@@ -265,7 +307,9 @@ pub async fn chat_stream(
 
     loop {
         let chunk = tokio::select! {
-            c = stream.next() => c,
+            c = tokio::time::timeout(STALL_TIMEOUT, stream.next()) => c.map_err(|_| {
+                format!("Le flux s'est interrompu : aucune donnée reçue depuis {} s. Cliquez sur « Continuer » pour reprendre.", STALL_TIMEOUT.as_secs())
+            })?,
             _ = cancel.notified() => {
                 let _ = on_event.send(StreamEvent::Done { finish_reason: None, cancelled: true });
                 return Ok(());

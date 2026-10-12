@@ -34,6 +34,36 @@ pub struct Settings {
     pub command_timeout: u64,
     /// Outils MCP exécutés sans demander (noms exposés).
     pub mcp_always_allow: Vec<String>,
+    /// Nombre max d'étapes (appels au modèle) d'un tour de l'agent de code.
+    pub max_steps: u32,
+    /// Relance l'agent s'il s'arrête en annonçant une action sans l'exécuter.
+    pub auto_continue: bool,
+    /// Résume automatiquement l'historique au-delà de ce pourcentage du contexte (0 = jamais).
+    pub auto_compact_percent: u32,
+    pub check_updates: bool,
+    pub skipped_version: String,
+    /// Tarifs en $ par million de tokens : « préfixe de modèle » → [entrée, sortie].
+    pub prices: std::collections::BTreeMap<String, [f64; 2]>,
+}
+
+/// Tarifs indicatifs (sources tierces, octobre 2026) : modifiables dans les réglages.
+fn default_prices() -> std::collections::BTreeMap<String, [f64; 2]> {
+    [
+        ("mistral-large", [0.5, 1.5]),
+        ("mistral-medium", [1.5, 7.5]),
+        ("mistral-small", [0.15, 0.6]),
+        ("magistral-medium", [2.0, 5.0]),
+        ("magistral-small", [0.5, 1.5]),
+        ("devstral-medium", [0.4, 2.0]),
+        ("devstral-latest", [0.4, 2.0]),
+        ("devstral-small", [0.1, 0.3]),
+        ("codestral", [0.3, 0.9]),
+        ("ministral", [0.1, 0.1]),
+        ("pixtral-large", [2.0, 6.0]),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect()
 }
 
 impl Default for Settings {
@@ -53,6 +83,12 @@ impl Default for Settings {
             code_model: "devstral-medium-latest".into(),
             command_timeout: 120,
             mcp_always_allow: Vec::new(),
+            max_steps: 100,
+            auto_continue: true,
+            auto_compact_percent: 80,
+            check_updates: true,
+            skipped_version: String::new(),
+            prices: default_prices(),
         }
     }
 }
@@ -252,6 +288,30 @@ pub fn remove_workspace(app: &AppHandle, path: &str) -> R<Vec<String>> {
     list.retain(|p| p != path);
     write_json(&workspaces_path(app)?, &list)?;
     Ok(list)
+}
+
+/// Consommation agrégée par jour et par modèle : `{"2026-10-12": {"modèle": [entrée, sortie, requêtes]}}`.
+pub type UsageLog = std::collections::BTreeMap<String, std::collections::BTreeMap<String, [u64; 3]>>;
+
+fn usage_path(app: &AppHandle) -> R<PathBuf> {
+    Ok(data_dir(app)?.join("usage.json"))
+}
+
+pub fn load_usage(app: &AppHandle) -> UsageLog {
+    usage_path(app)
+        .ok()
+        .and_then(|p| fs::read(p).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+pub fn record_usage(app: &AppHandle, day: &str, model: &str, prompt: u64, completion: u64) -> R<()> {
+    let mut log = load_usage(app);
+    let e = log.entry(day.to_owned()).or_default().entry(model.to_owned()).or_insert([0, 0, 0]);
+    e[0] += prompt;
+    e[1] += completion;
+    e[2] += 1;
+    write_json(&usage_path(app)?, &log)
 }
 
 fn mcp_path(app: &AppHandle) -> R<PathBuf> {

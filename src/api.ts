@@ -15,6 +15,13 @@ export interface Settings {
   codeModel: string;
   commandTimeout: number;
   mcpAlwaysAllow: string[];
+  maxSteps: number;
+  autoContinue: boolean;
+  autoCompactPercent: number;
+  checkUpdates: boolean;
+  skippedVersion: string;
+  /** $ par million de tokens : préfixe de modèle → [entrée, sortie]. */
+  prices: Record<string, [number, number]>;
 }
 
 export interface ModelInfo {
@@ -53,6 +60,20 @@ export interface Message {
   error?: string;
   cancelled?: boolean;
   toolCalls?: ToolCallRec[];
+  /** Relance envoyée automatiquement par l'application. */
+  auto?: boolean;
+}
+
+export interface Compaction {
+  summary: string;
+  /** Les messages d'indice < upto sont remplacés par le résumé dans les requêtes. */
+  upto: number;
+  at: number;
+}
+
+export interface Usage {
+  promptTokens: number;
+  completionTokens: number;
 }
 
 export type Kind = "chat" | "code";
@@ -71,6 +92,9 @@ export interface Conversation {
   permissionMode?: PermissionMode;
   webSearch?: boolean;
   mcp?: boolean;
+  compaction?: Compaction;
+  /** Consommation hors messages (compactions), par modèle. */
+  extraUsage?: Record<string, Usage>;
 }
 
 export interface ConversationSummary {
@@ -91,6 +115,7 @@ export type StreamEvent =
   | { type: "reasoning"; text: string }
   | { type: "usage"; promptTokens: number; completionTokens: number }
   | { type: "toolCalls"; calls: { id: string; name: string; arguments: string }[] }
+  | { type: "retry"; attempt: number; maxAttempts: number; delaySecs: number; reason: string }
   | { type: "done"; finishReason: string | null; cancelled: boolean };
 
 export interface ApiMessage {
@@ -130,6 +155,19 @@ export interface McpServerStatus {
   tools: { exposed: string; name: string; description: string }[];
 }
 
+export interface UpdateInfo {
+  current: string;
+  latest: string;
+  available: boolean;
+  releaseUrl: string;
+  assetName: string | null;
+  assetUrl: string | null;
+  notes: string;
+}
+
+/** jour → modèle → [entrée, sortie, requêtes] */
+export type UsageLog = Record<string, Record<string, [number, number, number]>>;
+
 export const api = {
   keyStatus: () => invoke<KeyStatus>("api_key_status"),
   setKey: (key: string) => invoke<void>("set_api_key", { key }),
@@ -144,7 +182,11 @@ export const api = {
   exportConversation: (id: string) => invoke<boolean>("export_conversation", { id }),
   dataDir: () => invoke<string>("data_dir"),
   cancel: (requestId: string) => invoke<void>("cancel_stream", { requestId }),
-  platform: () => invoke<{ os: string; shell: string }>("platform_info"),
+  platform: () => invoke<{ os: string; shell: string; version: string }>("platform_info"),
+  recordUsage: (day: string, model: string, promptTokens: number, completionTokens: number) =>
+    invoke<void>("record_usage", { day, model, promptTokens, completionTokens }),
+  getUsage: () => invoke<UsageLog>("get_usage"),
+  checkUpdate: () => invoke<UpdateInfo>("check_update"),
 
   toolDefinitions: (ctx: ToolContext) => invoke<ToolDef[]>("tool_definitions", { ctx }),
   previewTool: (ctx: ToolContext, name: string, args: string) =>
@@ -173,6 +215,7 @@ export const api = {
       temperature: number | null;
       maxTokens: number | null;
       tools: ToolDef["definition"][];
+      toolChoice?: "auto" | "none";
     },
     onEvent: (e: StreamEvent) => void,
   ): Promise<void> {

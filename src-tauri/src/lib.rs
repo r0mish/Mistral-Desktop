@@ -2,6 +2,7 @@ mod mcp;
 mod mistral;
 mod storage;
 mod tools;
+mod updates;
 mod web;
 mod workspace;
 
@@ -308,7 +309,26 @@ fn mcp_status(mcp: State<'_, Arc<McpManager>>) -> Vec<ServerStatus> {
 
 #[tauri::command]
 fn platform_info() -> serde_json::Value {
-    serde_json::json!({ "os": std::env::consts::OS, "shell": workspace::shell_name() })
+    serde_json::json!({
+        "os": std::env::consts::OS,
+        "shell": workspace::shell_name(),
+        "version": env!("CARGO_PKG_VERSION"),
+    })
+}
+
+#[tauri::command]
+fn record_usage(app: AppHandle, day: String, model: String, prompt_tokens: u64, completion_tokens: u64) -> CmdResult<()> {
+    storage::record_usage(&app, &day, &model, prompt_tokens, completion_tokens)
+}
+
+#[tauri::command]
+fn get_usage(app: AppHandle) -> storage::UsageLog {
+    storage::load_usage(&app)
+}
+
+#[tauri::command]
+async fn check_update() -> CmdResult<updates::UpdateInfo> {
+    updates::check().await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -360,6 +380,9 @@ pub fn run() {
             mcp_restart,
             mcp_status,
             platform_info,
+            record_usage,
+            get_usage,
+            check_update,
         ])
         .build(tauri::generate_context!())
         .expect("erreur au lancement de l'application");

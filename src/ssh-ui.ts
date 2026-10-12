@@ -8,6 +8,8 @@ let hosts: SshHost[] = [];
 let current: SshHost | null = null;
 let browsePath = "";
 let onOpen: (workspace: string) => void = () => {};
+/** Choix d'un dossier pour un autre écran (projet) au lieu d'ouvrir une session. */
+let onPick: ((workspace: string) => void) | null = null;
 let notify: (msg: string, error?: boolean) => void = () => {};
 
 const dlg = () => $<HTMLDialogElement>("#ssh-dialog");
@@ -152,7 +154,9 @@ async function browse(path: string) {
   }
 }
 
-export function openSshDialog() {
+export function openSshDialog(pick?: (workspace: string) => void) {
+  onPick = pick ?? null;
+  $("#ssh-open").textContent = pick ? "Choisir ce dossier" : "Ouvrir ce dossier";
   select(hosts[0] ?? null);
   dlg().showModal();
 }
@@ -161,6 +165,7 @@ export function initSshUi(opts: { onOpen: (ws: string) => void; toast: (msg: str
   onOpen = opts.onOpen;
   notify = opts.toast;
   $("#ssh-close").addEventListener("click", () => dlg().close());
+  dlg().addEventListener("close", () => (onPick = null));
   $("#ssh-new").addEventListener("click", () => select(null));
   $("#ssh-host-list").addEventListener("click", (e) => {
     const id = (e.target as HTMLElement).closest<HTMLElement>("[data-host]")?.dataset.host;
@@ -207,8 +212,9 @@ export function initSshUi(opts: { onOpen: (ws: string) => void; toast: (msg: str
     if (!current) return;
     try {
       const ws = await api.sshOpenWorkspace(current.id, browsePath);
+      const pick = onPick;
       dlg().close();
-      onOpen(ws);
+      (pick ?? onOpen)(ws);
     } catch (e) {
       notify(errMsg(e), true);
     }

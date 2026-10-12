@@ -291,22 +291,38 @@ el.projectSelect.addEventListener("change", () => {
   const v = el.projectSelect.value;
   if (v === "__new") {
     el.projectSelect.value = state.projectFilter;
-    return openProjectDialog(null);
+    return newProject();
   }
   state.projectFilter = v;
   if (state.current && !state.busy && (state.current.projectId ?? "") !== v) return newChat();
-  if (!state.current) state.draft.projectId = v || undefined;
+  if (!state.current) {
+    state.draft.projectId = v || undefined;
+    if (state.mode === "code") state.draft.workspace = projectWorkspace(v) ?? state.draft.workspace;
+  }
   renderSidebar();
   if (!state.current) renderConversation();
 });
 el.projectEdit.addEventListener("click", () => openProjectDialog(findProject(state.projectFilter)));
-el.convProject.addEventListener("change", () => setOpt("projectId", el.convProject.value || undefined));
+el.convProject.addEventListener("change", () => {
+  const id = el.convProject.value || undefined;
+  // Nouvelle session de code : on se place dans le dossier du projet choisi.
+  if (!state.current && state.mode === "code") state.draft.workspace = projectWorkspace(id) ?? state.draft.workspace;
+  setOpt("projectId", id);
+  if (!state.current) renderConversation();
+});
+
+/** Nouveau projet : en mode Code, le dossier ouvert est proposé par défaut. */
+const newProject = () =>
+  openProjectDialog(null, state.mode === "code" && opts().workspace ? { workspace: opts().workspace } : {});
 
 /** Après création, modification ou suppression d'un projet. */
 function onProjectChange(saved: Project | null, deletedId?: string) {
   if (saved) {
     state.projectFilter = saved.id;
-    if (!state.current) state.draft.projectId = saved.id;
+    if (!state.current) {
+      state.draft.projectId = saved.id;
+      if (state.mode === "code") state.draft.workspace = projectWorkspace(saved.id) ?? state.draft.workspace;
+    }
     toast(`Projet « ${saved.name} » enregistré`);
   }
   if (deletedId) {
@@ -412,6 +428,12 @@ async function openConversation(id: string) {
   el.input.focus();
 }
 
+/** Dossier de travail du projet, s'il est toujours autorisé. */
+const projectWorkspace = (id?: string | null) => {
+  const ws = findProject(id)?.workspace;
+  return ws && state.workspaces.includes(ws) ? ws : undefined;
+};
+
 function newChat() {
   if (state.busy) {
     toast("Arrêtez la génération en cours d'abord.", true);
@@ -419,7 +441,7 @@ function newChat() {
   }
   state.current = null;
   state.draft = {
-    workspace: state.mode === "code" ? state.workspaces[0] : undefined,
+    workspace: state.mode === "code" ? (projectWorkspace(state.projectFilter) ?? state.workspaces[0]) : undefined,
     webSearch: state.settings.webSearchDefault,
     mcp: true,
     permissionMode: "ask",
@@ -599,7 +621,7 @@ function renderWelcome() {
       <h2>Agent de code</h2>
       <p>L'agent explore, modifie et teste le code d'un dossier de votre machine ou d'un serveur SSH. Chaque modification et commande peut être soumise à votre approbation.</p>
       ${cur
-        ? `<div class="ws-current">${cur.remote ? icons.server : icons.folder}<div><strong>${escapeHtml(cur.name)}</strong><small>${escapeHtml(cur.detail)}</small></div><button class="btn-ghost sm" data-pick-ws>Dossier local</button><button class="btn-ghost sm" data-ssh>Serveur SSH</button></div>`
+        ? `<div class="ws-current">${cur.remote ? icons.server : icons.folder}<div><strong>${escapeHtml(cur.name)}</strong><small>${escapeHtml(cur.detail)}</small></div><button class="btn-ghost sm" data-pick-ws title="Choisir un autre dossier sur cette machine">${icons.folder} Changer</button><button class="btn-ghost sm" data-ssh title="Travailler dans un dossier d'un serveur distant">${icons.server} Serveur SSH…</button></div>`
         : `<p class="row center"><button class="btn-primary" data-pick-ws>${icons.folder} Ouvrir un dossier</button><button class="btn-ghost" data-ssh>${icons.server} Serveur SSH…</button></p>`}
       ${ws ? instrHint(ws) : ""}
       ${projectBanner()}
@@ -632,6 +654,7 @@ function projectBanner(): string {
   const bits = [
     p.instructions.trim() ? "consignes" : "",
     n ? `${n} fichier${n > 1 ? "s" : ""} de référence` : "",
+    p.workspace ? `dossier ${workspaceLabel(p.workspace).name}` : "",
     `≈ ${Math.round(projectChars(p) / 3.5).toLocaleString("fr-FR")} tokens de contexte`,
   ].filter(Boolean);
   return `<div class="project-banner">${icons.folder}<div><strong>Projet ${escapeHtml(p.name)}</strong><small>${bits.join(" · ")}</small></div>
@@ -1939,7 +1962,11 @@ async function init() {
   await loadHosts();
   await loadProjects();
   initSshUi({ onOpen: openRemoteWorkspace, toast });
-  initProjectsUi({ onChange: onProjectChange, toast });
+  initProjectsUi({
+    onChange: onProjectChange,
+    toast,
+    onWorkspaceAdded: () => api.listWorkspaces().then((w) => (state.workspaces = w)).catch(() => {}),
+  });
   initDictation({ input: el.input, toast });
   initGitUi({
     workspace: () => (opts().kind === "code" ? opts().workspace : undefined),

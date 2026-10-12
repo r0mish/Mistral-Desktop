@@ -1,6 +1,7 @@
 // Projets : conversations regroupées partageant des consignes et des fichiers de référence.
 import { api, type Project, type ProjectFile } from "./api";
 import { escapeHtml } from "./markdown";
+import { openSshDialog, workspaceLabel } from "./ssh-ui";
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
@@ -88,11 +89,35 @@ async function addFiles(list: Iterable<File>) {
   }
 }
 
-export function openProjectDialog(p: Project | null) {
+function renderWorkspace() {
+  const ws = editing?.workspace;
+  const cur = $("#p-ws-current");
+  if (ws) {
+    const l = workspaceLabel(ws);
+    cur.innerHTML = `${l.remote ? "🖥" : "📁"} <strong>${escapeHtml(l.name)}</strong> <small>${escapeHtml(l.detail)}</small>`;
+    cur.title = l.detail;
+  } else {
+    cur.textContent = "Aucun : chaque session de code choisit son dossier";
+    cur.title = "";
+  }
+  cur.classList.toggle("muted", !ws);
+  $("#p-ws-clear").hidden = !ws;
+}
+
+function setWorkspace(ws: string | null) {
+  if (!editing) return;
+  editing.workspace = ws;
+  renderWorkspace();
+  onWorkspaceAdded();
+}
+
+let onWorkspaceAdded: () => void = () => {};
+
+export function openProjectDialog(p: Project | null, defaults: Partial<Project> = {}) {
   const now = Date.now();
   editing = p
     ? structuredClone(p)
-    : { id: crypto.randomUUID(), name: "", instructions: "", files: [], createdAt: now, updatedAt: now };
+    : { id: crypto.randomUUID(), name: "", instructions: "", files: [], createdAt: now, updatedAt: now, ...defaults };
   $("#project-title").textContent = p ? `Projet « ${p.name} »` : "Nouveau projet";
   $<HTMLInputElement>("#p-name").value = editing.name;
   $<HTMLTextAreaElement>("#p-instructions").value = editing.instructions;
@@ -101,14 +126,31 @@ export function openProjectDialog(p: Project | null) {
   del.classList.remove("confirm");
   del.textContent = "Supprimer le projet";
   $("#project-error").hidden = true;
+  renderWorkspace();
   renderFiles();
   dlg().showModal();
   $<HTMLInputElement>("#p-name").focus();
 }
 
-export function initProjectsUi(opts: { onChange: (saved: Project | null, deletedId?: string) => void; toast: (msg: string, error?: boolean) => void }) {
+export function initProjectsUi(opts: {
+  onChange: (saved: Project | null, deletedId?: string) => void;
+  toast: (msg: string, error?: boolean) => void;
+  /** Un dossier vient d'être autorisé (liste des dossiers à rafraîchir). */
+  onWorkspaceAdded: () => void;
+}) {
   onChange = opts.onChange;
   notify = opts.toast;
+  onWorkspaceAdded = opts.onWorkspaceAdded;
+  $("#p-ws-local").addEventListener("click", async () => {
+    try {
+      const ws = await api.pickWorkspace();
+      if (ws) setWorkspace(ws);
+    } catch (e) {
+      notify(errMsg(e), true);
+    }
+  });
+  $("#p-ws-ssh").addEventListener("click", () => openSshDialog((ws) => setWorkspace(ws)));
+  $("#p-ws-clear").addEventListener("click", () => setWorkspace(null));
   $("#p-cancel").addEventListener("click", () => dlg().close());
   $("#p-instructions").addEventListener("input", renderFiles);
   $("#p-add").addEventListener("click", () => $<HTMLInputElement>("#p-file-input").click());

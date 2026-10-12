@@ -390,6 +390,17 @@
         </div>
         <fieldset>
           <label>Nom <input id="p-name" required maxlength="80" placeholder="Ex. : Thèse, Client Dupont, Homelab…" /></label>
+          <div class="p-ws-field">
+            <span class="p-ws-label">Dossier de travail (agent de code)</span>
+            <div class="p-ws">
+              <span id="p-ws-current" class="muted small">Aucun : chaque session de code choisit son dossier</span>
+              <span class="row">
+                <button type="button" class="btn-ghost sm" id="p-ws-local">Dossier local…</button>
+                <button type="button" class="btn-ghost sm" id="p-ws-ssh">Serveur SSH…</button>
+                <button type="button" class="icon-btn sm" id="p-ws-clear" title="Retirer le dossier" hidden>×</button>
+              </span>
+            </div>
+          </div>
           <label>Consignes (ajoutées à chaque conversation du projet)
             <textarea id="p-instructions" rows="6" placeholder="Ex. : Tu aides à rédiger la documentation de mon homelab Proxmox. Réponds en français, avec des commandes prêtes à copier."></textarea>
           </label>

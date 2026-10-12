@@ -280,14 +280,23 @@ fn workspaces_path(app: &AppHandle) -> R<PathBuf> {
 
 /// Dossiers de projet autorisés : uniquement ceux choisis via la boîte de dialogue native.
 pub fn load_workspaces(app: &AppHandle) -> Vec<String> {
-    workspaces_path(app)
+    let raw: Vec<String> = workspaces_path(app)
         .ok()
         .and_then(|p| fs::read(p).ok())
         .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Les anciennes versions enregistraient `\\?\C:\…` sous Windows.
+    let mut out: Vec<String> = Vec::new();
+    for ws in raw.iter().map(|w| crate::workspace::normalize_workspace(w)) {
+        if !out.contains(&ws) {
+            out.push(ws);
+        }
+    }
+    out
 }
 
 pub fn add_workspace(app: &AppHandle, path: &str) -> R<Vec<String>> {
+    let path = &crate::workspace::normalize_workspace(path);
     let mut list = load_workspaces(app);
     list.retain(|p| p != path);
     list.insert(0, path.to_owned());
@@ -297,6 +306,7 @@ pub fn add_workspace(app: &AppHandle, path: &str) -> R<Vec<String>> {
 }
 
 pub fn remove_workspace(app: &AppHandle, path: &str) -> R<Vec<String>> {
+    let path = &crate::workspace::normalize_workspace(path);
     let mut list = load_workspaces(app);
     list.retain(|p| p != path);
     write_json(&workspaces_path(app)?, &list)?;

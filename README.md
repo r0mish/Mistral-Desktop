@@ -93,7 +93,7 @@ Emplacements locaux :
 
 Téléchargez l'installateur de votre système dans les [Releases](https://github.com/r0mish/Mistral-Desktop/releases) : `.dmg` (macOS Apple Silicon et Intel), `.exe`/`.msi` (Windows), `.deb`, `.rpm` et `.AppImage` (Linux).
 
-Une nouvelle release est construite et publiée automatiquement pour tous les systèmes dès qu'un changement de version (`src-tauri/tauri.conf.json`) arrive sur `main`. Elle peut aussi être lancée à la main : Actions → Release → Run workflow.
+Une nouvelle release est construite et publiée automatiquement pour tous les systèmes dès qu'une version encore jamais publiée (`version` dans `src-tauri/tauri.conf.json`) arrive sur `main` : pour sortir une version, il suffit d'incrémenter ce numéro. Elle peut aussi être lancée à la main : Actions → Release → Run workflow.
 
 Les binaires ne sont pas signés :
 - **macOS** : `xattr -cr "/Applications/Mistral Desktop.app"` au premier lancement

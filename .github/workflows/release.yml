@@ -1,12 +1,11 @@
 name: Release
 
-# Une release est publiée automatiquement quand la version de
-# src-tauri/tauri.conf.json arrive sur main sans tag correspondant.
-# Également déclenchable à la main (Actions → Release → Run workflow).
+# À chaque push sur main, une release est construite et publiée si la version
+# de src-tauri/tauri.conf.json n'a pas encore de tag (sinon le job s'arrête en
+# quelques secondes). Également déclenchable à la main : Actions → Release.
 on:
   push:
     branches: [main]
-    paths: [src-tauri/tauri.conf.json]
   workflow_dispatch:
 
 permissions:

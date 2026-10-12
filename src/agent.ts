@@ -10,11 +10,13 @@ export interface Platform {
   os: string;
   shell: string;
   shellGuidance?: string;
+  /** Serveur SSH du dossier de projet, le cas échéant. */
+  remote?: string;
 }
 
 export function codeSystemPrompt(workspace: string, p: Platform): string {
   return `You are an expert software engineering agent working directly in the user's project.
-Project root: ${workspace}
+Project root: ${workspace}${p.remote ? ` — on the REMOTE server ${p.remote} (all tools operate on that server over SSH, not on the user's computer)` : ""}
 Operating system: ${p.os}. Today: ${today()}.
 Shell used by run_command: ${p.shell}. ${p.shellGuidance ?? ""}
 
@@ -24,7 +26,8 @@ How to work:
 - Follow the project's existing style, conventions and libraries.
 - After modifying code, run the relevant build, linter or tests with run_command when the project has them, and fix what fails.
 - Commands are non-interactive and time-limited: never start servers, watchers or REPLs; pass flags such as --yes when needed.
-- Never run destructive commands (rm -rf, git reset --hard, git push --force, dropping databases…) unless the user explicitly asked for it.
+- Never run destructive commands (rm -rf, git reset --hard, git push --force, dropping databases, restarting services…) unless the user explicitly asked for it.
+- Use git_status, git_diff and git_log to inspect version control; commit or push only when the user asks.
 - If the user refuses an action, stop and ask how to proceed instead of trying a workaround.
 - Work autonomously until the task is fully done. Never end your turn by announcing what you are about to do ("I will now…", "Je vais…"): call the tool directly in the same turn. Only end your turn when the task is complete or when you genuinely need the user's input.
 - Be concise. When finished, summarize what you changed and how you verified it.
@@ -188,7 +191,7 @@ export function toolTitle(tc: ToolCallRec): { icon: string; html: string } {
   }
 }
 
-function diffHtml(diff: string): string {
+export function diffHtml(diff: string): string {
   const lines = diff.split("\n").map((l) => {
     const cls = l.startsWith("+++") || l.startsWith("---") ? "meta" : l.startsWith("+") ? "add" : l.startsWith("-") ? "del" : l.startsWith("@@") ? "hunk" : "";
     return `<span class="${cls}">${escapeHtml(l) || " "}</span>`;

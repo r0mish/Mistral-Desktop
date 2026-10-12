@@ -1,7 +1,10 @@
+mod git;
 mod mcp;
 mod mistral;
 mod shell;
+mod ssh;
 mod storage;
+mod target;
 mod tools;
 mod updates;
 mod web;
@@ -169,8 +172,8 @@ fn tool_definitions(app: AppHandle, mcp: State<'_, Arc<McpManager>>, ctx: ToolCo
 }
 
 #[tauri::command]
-fn preview_tool(app: AppHandle, ctx: ToolContext, name: String, arguments: String) -> CmdResult<Option<String>> {
-    tools::preview(&ctx, &storage::load_workspaces(&app), &name, &arguments)
+async fn preview_tool(app: AppHandle, ctx: ToolContext, name: String, arguments: String) -> CmdResult<Option<String>> {
+    tools::preview(&ctx, &storage::load_workspaces(&app), &storage::load_ssh_hosts(&app), &name, &arguments).await
 }
 
 #[tauri::command]
@@ -185,9 +188,10 @@ async fn run_tool(
 ) -> CmdResult<ToolOutput> {
     let settings = storage::load_settings(&app)?;
     let approved = storage::load_workspaces(&app);
+    let hosts = storage::load_ssh_hosts(&app);
     let cancel = Arc::new(Notify::new());
     streams.0.lock().unwrap().insert(request_id.clone(), cancel.clone());
-    let env = tools::RunEnv { settings: &settings, api_key: api_key(), approved: &approved, mcp: &mcp, cancel: cancel.clone() };
+    let env = tools::RunEnv { settings: &settings, api_key: api_key(), approved: &approved, hosts: &hosts, mcp: &mcp, cancel: cancel.clone() };
     let out = if name == "run_command" {
         // La commande gère elle-même l'annulation (arrêt du groupe de processus).
         tools::run(&ctx, env, &name, &arguments).await
@@ -233,6 +237,150 @@ fn touch_workspace(app: AppHandle, path: String) -> CmdResult<()> {
         storage::add_workspace(&app, &path)?;
     }
     Ok(())
+}
+
+// ------------------------------------------------------------------ SSH
+
+#[tauri::command]
+fn ssh_hosts(app: AppHandle) -> Vec<ssh::SshHost> {
+    storage::load_ssh_hosts(&app)
+}
+
+#[tauri::command]
+fn ssh_save_host(app: AppHandle, mut host: ssh::SshHost) -> CmdResult<ssh::SshHost> {
+    host.host = host.host.trim().to_string();
+    host.label = if host.label.trim().is_empty() { host.host.clone() } else { host.label.trim().to_string() };
+    host.user = host.user.filter(|u| !u.trim().is_empty());
+    host.identity_file = host.identity_file.filter(|k| !k.trim().is_empty());
+    ssh::validate(&host)?;
+    let mut hosts = storage::load_ssh_hosts(&app);
+    if host.id.is_empty() {
+        host.id = uuid::Uuid::new_v4().simple().to_string()[..8].to_owned();
+    }
+    hosts.retain(|h| h.id != host.id);
+    hosts.push(host.clone());
+    hosts.sort_by_key(|h| h.label.to_lowercase());
+    storage::save_ssh_hosts(&app, &hosts)?;
+    Ok(host)
+}
+
+#[tauri::command]
+fn ssh_delete_host(app: AppHandle, id: String) -> CmdResult<()> {
+    let mut hosts = storage::load_ssh_hosts(&app);
+    hosts.retain(|h| h.id != id);
+    storage::save_ssh_hosts(&app, &hosts)?;
+    // Les dossiers distants de cet hôte ne sont plus autorisés.
+    for ws in storage::load_workspaces(&app) {
+        if target::parse_remote(&ws).is_some_and(|(hid, _)| hid == id) {
+            storage::remove_workspace(&app, &ws)?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn ssh_test(app: AppHandle, host: ssh::SshHost) -> CmdResult<ssh::TestResult> {
+    let res = ssh::test(&host).await;
+    // Mémorise le système détecté pour informer le modèle.
+    if res.ok && !host.id.is_empty() {
+        let mut hosts = storage::load_ssh_hosts(&app);
+        if let Some(h) = hosts.iter_mut().find(|h| h.id == host.id) {
+            h.system = res.system.clone();
+            storage::save_ssh_hosts(&app, &hosts)?;
+        }
+    }
+    Ok(res)
+}
+
+#[tauri::command]
+async fn ssh_trust(host: ssh::SshHost) -> CmdResult<()> {
+    ssh::trust(&host).await
+}
+
+fn find_host(app: &AppHandle, id: &str) -> CmdResult<ssh::SshHost> {
+    storage::load_ssh_hosts(app).into_iter().find(|h| h.id == id).ok_or_else(|| "Serveur SSH inconnu".to_string())
+}
+
+#[tauri::command]
+async fn ssh_list_dirs(app: AppHandle, host_id: String, path: String) -> CmdResult<ssh::DirListing> {
+    ssh::list_dirs(&find_host(&app, &host_id)?, &path).await
+}
+
+/// Autorise un dossier distant comme dossier de projet (après vérification de son existence).
+#[tauri::command]
+async fn ssh_open_workspace(app: AppHandle, host_id: String, path: String) -> CmdResult<String> {
+    let host = find_host(&app, &host_id)?;
+    let listing = ssh::list_dirs(&host, &path).await?;
+    let ws = target::remote_workspace(&host.id, &listing.path);
+    storage::add_workspace(&app, &ws)?;
+    Ok(ws)
+}
+
+// ------------------------------------------------------------------ git
+
+fn git_target(app: &AppHandle, workspace: &str) -> CmdResult<target::Target> {
+    target::resolve(workspace, &storage::load_workspaces(app), &storage::load_ssh_hosts(app))
+}
+
+#[tauri::command]
+async fn git_status(app: AppHandle, workspace: String) -> CmdResult<git::GitStatus> {
+    git::status(&git_target(&app, &workspace)?).await
+}
+
+#[tauri::command]
+async fn git_diff(app: AppHandle, workspace: String, path: Option<String>, staged: bool, untracked: bool) -> CmdResult<String> {
+    git::diff(&git_target(&app, &workspace)?, path.as_deref(), staged, untracked).await
+}
+
+#[tauri::command]
+async fn git_stage(app: AppHandle, workspace: String, paths: Vec<String>) -> CmdResult<()> {
+    git::stage(&git_target(&app, &workspace)?, &paths).await
+}
+
+#[tauri::command]
+async fn git_unstage(app: AppHandle, workspace: String, paths: Vec<String>) -> CmdResult<()> {
+    git::unstage(&git_target(&app, &workspace)?, &paths).await
+}
+
+#[tauri::command]
+async fn git_discard(app: AppHandle, workspace: String, tracked: Vec<String>, untracked: Vec<String>) -> CmdResult<()> {
+    git::discard(&git_target(&app, &workspace)?, &tracked, &untracked).await
+}
+
+#[tauri::command]
+async fn git_commit(app: AppHandle, workspace: String, message: String) -> CmdResult<String> {
+    git::commit(&git_target(&app, &workspace)?, &message).await
+}
+
+#[tauri::command]
+async fn git_sync(app: AppHandle, workspace: String, action: String) -> CmdResult<String> {
+    let t = git_target(&app, &workspace)?;
+    match action.as_str() {
+        "push" => git::push(&t).await,
+        "pull" => git::pull(&t).await,
+        "fetch" => git::fetch(&t).await.map(|_| String::new()),
+        _ => Err("Action inconnue".into()),
+    }
+}
+
+#[tauri::command]
+async fn git_branches(app: AppHandle, workspace: String) -> CmdResult<Vec<String>> {
+    git::branches(&git_target(&app, &workspace)?).await
+}
+
+#[tauri::command]
+async fn git_checkout(app: AppHandle, workspace: String, branch: String, create: bool) -> CmdResult<()> {
+    git::checkout(&git_target(&app, &workspace)?, &branch, create).await
+}
+
+#[tauri::command]
+async fn git_log(app: AppHandle, workspace: String, count: u32) -> CmdResult<Vec<git::Commit>> {
+    git::log(&git_target(&app, &workspace)?, count).await
+}
+
+#[tauri::command]
+async fn git_init(app: AppHandle, workspace: String) -> CmdResult<()> {
+    git::init(&git_target(&app, &workspace)?).await
 }
 
 // ------------------------------------------------------------------ documents
@@ -389,6 +537,24 @@ pub fn run() {
             record_usage,
             get_usage,
             check_update,
+            ssh_hosts,
+            ssh_save_host,
+            ssh_delete_host,
+            ssh_test,
+            ssh_trust,
+            ssh_list_dirs,
+            ssh_open_workspace,
+            git_status,
+            git_diff,
+            git_stage,
+            git_unstage,
+            git_discard,
+            git_commit,
+            git_sync,
+            git_branches,
+            git_checkout,
+            git_log,
+            git_init,
         ])
         .build(tauri::generate_context!())
         .expect("erreur au lancement de l'application");

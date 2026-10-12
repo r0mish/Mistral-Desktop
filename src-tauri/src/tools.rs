@@ -1,7 +1,6 @@
 //! Registre des outils proposés au modèle et exécution des appels.
 //! L'interface décide de l'approbation selon le niveau de risque renvoyé ici.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -10,7 +9,9 @@ use tokio::sync::Notify;
 
 use crate::mcp::McpManager;
 use crate::storage::Settings;
-use crate::{mistral, web, workspace};
+use crate::ssh::SshHost;
+use crate::target::Target;
+use crate::{git, mistral, web};
 
 type R<T> = Result<T, String>;
 
@@ -53,6 +54,12 @@ fn func(name: &str, description: &str, properties: Value, required: &[&str]) -> 
 }
 
 pub fn definitions(ctx: &ToolContext, mcp: &McpManager, shell: &crate::shell::Shell) -> Vec<ToolDef> {
+    let remote = ctx.workspace.as_deref().and_then(crate::target::parse_remote).is_some();
+    let (shell_name, shell_hint) = if remote {
+        ("bash sur le serveur distant (SSH)".to_string(), "Commands run on the remote server over SSH: use bash/POSIX syntax.")
+    } else {
+        (shell.name.clone(), crate::shell::guidance(shell))
+    };
     let mut out = Vec::new();
     if ctx.web {
         out.push(ToolDef {
@@ -146,14 +153,44 @@ pub fn definitions(ctx: &ToolContext, mcp: &McpManager, shell: &crate::shell::Sh
                     "run_command",
                     &format!(
                         "Exécute une commande dans la racine du projet (tests, build, git, linters…). Shell : {}. {} Non interactive : stdin est fermé. Sortie limitée à 30 000 caractères.",
-                        shell.name,
-                        crate::shell::guidance(shell)
+                        shell_name,
+                        shell_hint
                     ),
                     json!({
                         "command": { "type": "string" },
                         "timeout_seconds": { "type": "integer", "description": "Délai maximal (défaut : réglage de l'application)" }
                     }),
                     &["command"],
+                ),
+            },
+            ToolDef {
+                risk: "read",
+                definition: func(
+                    "git_status",
+                    "État git du projet : branche, avance/retard sur la branche distante, fichiers modifiés (format porcelain XY).",
+                    json!({}),
+                    &[],
+                ),
+            },
+            ToolDef {
+                risk: "read",
+                definition: func(
+                    "git_diff",
+                    "Différences git non commitées (ou indexées si staged=true), pour tout le dépôt ou un fichier.",
+                    json!({
+                        "path": { "type": "string", "description": "Fichier à comparer (défaut : tout le dépôt)" },
+                        "staged": { "type": "boolean", "description": "Comparer l'index au lieu de l'arbre de travail" }
+                    }),
+                    &[],
+                ),
+            },
+            ToolDef {
+                risk: "read",
+                definition: func(
+                    "git_log",
+                    "Derniers commits (hash court, sujet, auteur, date).",
+                    json!({ "count": { "type": "integer", "description": "Nombre de commits (défaut 15)" } }),
+                    &[],
                 ),
             },
         ]);
@@ -189,27 +226,23 @@ fn flag(args: &Map<String, Value>, key: &str) -> bool {
     args.get(key).is_some_and(|v| v.as_bool().unwrap_or(v.as_str() == Some("true")))
 }
 
-/// Dossier de projet du contexte, uniquement s'il a été choisi via la boîte de dialogue native.
-fn root(ctx: &ToolContext, approved: &[String]) -> R<PathBuf> {
+/// Dossier de projet du contexte (local ou SSH), uniquement s'il a été autorisé
+/// (boîte de dialogue native ou connexion SSH validée).
+fn root(ctx: &ToolContext, approved: &[String], hosts: &[SshHost]) -> R<Target> {
     let ws = ctx.workspace.as_deref().ok_or("Aucun dossier de projet associé à cette conversation")?;
-    if !approved.iter().any(|a| a == ws) {
-        return Err("Dossier de projet non autorisé : choisissez-le via « Ouvrir un dossier »".into());
-    }
-    Ok(PathBuf::from(ws))
+    crate::target::resolve(ws, approved, hosts)
 }
 
 /// Diff prévisionnel d'une écriture, pour la demande d'approbation.
-pub fn preview(ctx: &ToolContext, approved: &[String], name: &str, arguments: &str) -> R<Option<String>> {
+pub async fn preview(ctx: &ToolContext, approved: &[String], hosts: &[SshHost], name: &str, arguments: &str) -> R<Option<String>> {
     let args = parse_args(arguments)?;
     match name {
-        "write_file" => Ok(Some(workspace::preview_write(&root(ctx, approved)?, s(&args, "path")?, s(&args, "content")?)?)),
-        "edit_file" => Ok(Some(workspace::preview_edit(
-            &root(ctx, approved)?,
-            s(&args, "path")?,
-            s(&args, "old_string")?,
-            s(&args, "new_string")?,
-            flag(&args, "replace_all"),
-        )?)),
+        "write_file" => Ok(Some(root(ctx, approved, hosts)?.preview_write(s(&args, "path")?, s(&args, "content")?).await?)),
+        "edit_file" => Ok(Some(
+            root(ctx, approved, hosts)?
+                .preview_edit(s(&args, "path")?, s(&args, "old_string")?, s(&args, "new_string")?, flag(&args, "replace_all"))
+                .await?,
+        )),
         _ => Ok(None),
     }
 }
@@ -218,6 +251,7 @@ pub struct RunEnv<'a> {
     pub settings: &'a Settings,
     pub api_key: R<String>,
     pub approved: &'a [String],
+    pub hosts: &'a [SshHost],
     pub mcp: &'a McpManager,
     pub cancel: Arc<Notify>,
 }
@@ -232,6 +266,7 @@ pub async fn run(ctx: &ToolContext, env: RunEnv<'_>, name: &str, arguments: &str
 async fn run_inner(ctx: &ToolContext, env: RunEnv<'_>, name: &str, arguments: &str) -> R<ToolOutput> {
     let args = parse_args(arguments)?;
     let text = |content: String| ToolOutput { content, ..Default::default() };
+    let target = || root(ctx, env.approved, env.hosts);
     match name {
         "web_search" => {
             let q = s(&args, "query")?;
@@ -242,41 +277,36 @@ async fn run_inner(ctx: &ToolContext, env: RunEnv<'_>, name: &str, arguments: &s
             Ok(text(out))
         }
         "fetch_url" => Ok(text(web::fetch_url(s(&args, "url")?, opt_u(&args, "max_chars").unwrap_or(20_000).clamp(1000, 100_000)).await?)),
-        "list_files" => {
-            let r = root(ctx, env.approved)?;
-            Ok(text(workspace::list_files(&r, opt_s(&args, "path").unwrap_or("."), opt_u(&args, "depth").unwrap_or(2))?))
-        }
-        "read_file" => {
-            let r = root(ctx, env.approved)?;
-            Ok(text(workspace::read_file(&r, s(&args, "path")?, opt_u(&args, "offset"), opt_u(&args, "limit"))?))
-        }
-        "search_files" => {
-            let r = root(ctx, env.approved)?;
-            let (pattern, path, glob) = (s(&args, "pattern")?.to_owned(), opt_s(&args, "path").unwrap_or(".").to_owned(), opt_s(&args, "glob").map(str::to_owned));
-            let out = tokio::task::spawn_blocking(move || workspace::search(&r, &pattern, &path, glob.as_deref()))
-                .await
-                .map_err(|e| e.to_string())??;
-            Ok(text(out))
-        }
+        "list_files" => Ok(text(target()?.list_files(opt_s(&args, "path").unwrap_or("."), opt_u(&args, "depth").unwrap_or(2)).await?)),
+        "read_file" => Ok(text(target()?.read_file(s(&args, "path")?, opt_u(&args, "offset"), opt_u(&args, "limit")).await?)),
+        "search_files" => Ok(text(target()?.search(s(&args, "pattern")?, opt_s(&args, "path").unwrap_or("."), opt_s(&args, "glob")).await?)),
         "write_file" => {
-            let (msg, diff) = workspace::write_file(&root(ctx, env.approved)?, s(&args, "path")?, s(&args, "content")?)?;
+            let (msg, diff) = target()?.write_file(s(&args, "path")?, s(&args, "content")?).await?;
             Ok(ToolOutput { content: msg, is_error: false, diff: Some(diff) })
         }
         "edit_file" => {
-            let (msg, diff) = workspace::edit_file(
-                &root(ctx, env.approved)?,
-                s(&args, "path")?,
-                s(&args, "old_string")?,
-                s(&args, "new_string")?,
-                flag(&args, "replace_all"),
-            )?;
+            let (msg, diff) = target()?
+                .edit_file(s(&args, "path")?, s(&args, "old_string")?, s(&args, "new_string")?, flag(&args, "replace_all"))
+                .await?;
             Ok(ToolOutput { content: msg, is_error: false, diff: Some(diff) })
         }
         "run_command" => {
-            let r = root(ctx, env.approved)?;
             let timeout = opt_u(&args, "timeout_seconds").map(|t| t as u64).unwrap_or(env.settings.command_timeout);
             let sh = crate::shell::detect(&env.settings.shell);
-            Ok(text(workspace::run_command(&r, &sh, s(&args, "command")?, timeout, env.cancel).await?))
+            Ok(text(target()?.run_command(&sh, s(&args, "command")?, timeout, env.cancel).await?))
+        }
+        "git_status" => Ok(text(git::status_text(&git::status(&target()?).await?))),
+        "git_diff" => {
+            let out = git::diff(&target()?, opt_s(&args, "path"), flag(&args, "staged"), false).await?;
+            Ok(text(if out.trim().is_empty() { "Aucune différence.".into() } else { out }))
+        }
+        "git_log" => {
+            let commits = git::log(&target()?, opt_u(&args, "count").unwrap_or(15) as u32).await?;
+            Ok(text(if commits.is_empty() {
+                "Aucun commit.".into()
+            } else {
+                commits.iter().map(|c| format!("{} {} ({}, {})", c.hash, c.subject, c.author, c.date)).collect::<Vec<_>>().join("\n")
+            }))
         }
         n if n.starts_with("mcp_") => {
             let (content, is_error) = env.mcp.call(n, args).await?;

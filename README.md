@@ -37,6 +37,25 @@ Un agent façon Claude Code, propulsé par Devstral, travaille dans un dossier d
 - Commandes non interactives, avec délai max configurable ; l'arrêt tue tout l'arbre de processus
 - **Shell** : bash sous macOS/Linux. Sous Windows, **Git Bash** s'il est installé (les modèles écrivent naturellement du bash), sinon PowerShell 7, sinon Windows PowerShell 5.1 ; l'agent reçoit des consignes adaptées au shell détecté. Choix manuel dans Réglages → Code. Recommandé : installer [Git pour Windows](https://git-scm.com/download/win)
 
+### Serveurs SSH distants
+
+Dans l'onglet **Code** → **Serveur SSH…**, l'agent travaille directement sur un serveur : lecture, recherche (ripgrep ou grep), édition de fichiers, commandes et git s'exécutent à distance.
+- Utilise le **client OpenSSH du système** : alias, `ProxyJump`, clés et options de `~/.ssh/config` s'appliquent comme dans un terminal ; authentification par **agent SSH ou clé** (pas de mot de passe, jamais d'invite bloquante)
+- **Hôte inconnu** : les empreintes SHA256 sont affichées avant toute confiance, puis ajoutées à `~/.ssh/known_hosts` ; une clé d'hôte modifiée est signalée
+- Connexions réutilisées (ControlMaster) sous macOS/Linux pour des outils rapides
+- Navigation dans les dossiers distants pour choisir le projet ; accès confiné à ce dossier pour les outils de fichiers
+- Arrêt fiable : le groupe de processus distant est tué (TERM puis KILL) quand vous arrêtez une commande
+- Le modèle sait qu'il opère sur un serveur distant (système détecté) et est invité à la prudence (services, configuration, données)
+
+### Git
+
+Bouton **⎇** dans la barre du haut (ou `Ctrl/⌘+G`), en local comme en SSH :
+- branche courante, avance/retard sur la branche distante, changement et création de branche
+- fichiers modifiés / indexés / nouveaux, **diff** coloré au clic, indexer / retirer / annuler (double clic)
+- **commit** avec message **généré par le modèle** à partir du diff indexé (Conventional Commits, langue des commits précédents)
+- récupérer / tirer (`--ff-only`) / pousser (crée la branche distante si besoin), historique des 20 derniers commits
+- l'agent dispose d'outils `git_status`, `git_diff` et `git_log` en lecture seule (sans approbation) ; commit et push restent sur votre demande
+
 ### Serveurs MCP
 
 ![MCP](docs/screenshot-mcp.png)
@@ -84,7 +103,7 @@ Configuration au **format de Claude Desktop** (Réglages → MCP) :
 | Appels réseau | Faits **côté Rust** (magasin de certificats du système, compatible avec les proxys d'entreprise) ; la clé n'est jamais exposée à la WebView. Destinations : l'URL d'API configurée, l'instance SearXNG éventuelle, les pages lues par `fetch_url`, vos serveurs MCP. |
 | Conversations | Fichiers JSON locaux, jamais synchronisés. |
 | WebView | CSP stricte (aucune ressource distante, donc aucun pixel de suivi), HTML assaini par DOMPurify, liens ouverts dans le navigateur du système. |
-| Agent de code | Dossiers autorisés uniquement via la boîte de dialogue native ; écritures et commandes soumises à approbation par défaut. ⚠️ En mode **Autonome**, les commandes s'exécutent avec vos droits sans confirmation : à réserver aux projets de confiance (le contenu lu sur le web ou dans le dépôt peut tenter d'influencer le modèle). |
+| Agent de code | Dossiers autorisés uniquement via la boîte de dialogue native ou une connexion SSH validée ; écritures et commandes soumises à approbation par défaut. ⚠️ En mode **Autonome**, les commandes s'exécutent avec vos droits sans confirmation : à réserver aux projets de confiance (le contenu lu sur le web ou dans le dépôt peut tenter d'influencer le modèle). |
 | MCP | `mcp.json` est stocké en clair dans le dossier de configuration : évitez d'y mettre des secrets sensibles, ou préférez des serveurs locaux. |
 | Auto-hébergement | URL d'API configurable : compatible avec un serveur OpenAI-like (vLLM, Ollama, llama.cpp…) servant les modèles open-weight de Mistral. HTTP en clair accepté seulement sur `localhost`. La recherche web via Mistral et l'OCR nécessitent l'API Mistral ; utilisez SearXNG et l'extraction PDF locale pour un fonctionnement 100 % local. |
 

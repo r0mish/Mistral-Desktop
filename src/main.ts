@@ -1,0 +1,1322 @@
+import "highlight.js/styles/github-dark.css";
+import "./styles.css";
+import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
+import {
+  api,
+  type Conversation,
+  type ConversationSummary,
+  type Kind,
+  type McpServerStatus,
+  type Message,
+  type ModelInfo,
+  type PermissionMode,
+  type Risk,
+  type Settings,
+  type TextFile,
+  type ToolCallRec,
+  type ToolContext,
+} from "./api";
+import { needsApproval, systemPrompt, toApiMessages, toolCardHtml } from "./agent";
+import { escapeHtml, renderMarkdown } from "./markdown";
+
+const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
+
+const el = {
+  app: $("#app"),
+  convList: $("#conv-list"),
+  search: $<HTMLInputElement>("#search"),
+  newChatLabel: $("#new-chat-label"),
+  title: $("#conv-title"),
+  wsChip: $<HTMLButtonElement>("#ws-chip"),
+  permSelect: $<HTMLSelectElement>("#perm-select"),
+  modelSelect: $<HTMLSelectElement>("#model-select"),
+  exportBtn: $<HTMLButtonElement>("#export-btn"),
+  messages: $("#messages"),
+  composer: $<HTMLFormElement>("#composer"),
+  input: $<HTMLTextAreaElement>("#input"),
+  attachments: $("#attachments"),
+  fileInput: $<HTMLInputElement>("#file-input"),
+  webToggle: $<HTMLButtonElement>("#web-toggle"),
+  mcpToggle: $<HTMLButtonElement>("#mcp-toggle"),
+  sendBtn: $<HTMLButtonElement>("#send-btn"),
+  hint: $("#hint"),
+  drop: $("#drop-overlay"),
+  toast: $("#toast"),
+  settings: $<HTMLDialogElement>("#settings"),
+};
+
+const FALLBACK_MODELS = [
+  "mistral-medium-latest",
+  "mistral-large-latest",
+  "mistral-small-latest",
+  "magistral-medium-latest",
+  "devstral-medium-latest",
+  "codestral-latest",
+];
+const MAX_TEXT_FILE = 512 * 1024;
+const MAX_PDF = 50 * 1024 * 1024;
+const MAX_IMAGE_SIDE = 2048;
+const MAX_STEPS = { chat: 12, code: 50 };
+
+/** Brouillon de la prochaine conversation (avant le premier envoi). */
+interface Draft {
+  workspace?: string;
+  webSearch: boolean;
+  mcp: boolean;
+  permissionMode: PermissionMode;
+}
+
+const state = {
+  settings: null as unknown as Settings,
+  platform: { os: "linux", shell: "sh" },
+  keyConfigured: false,
+  models: [] as ModelInfo[],
+  convs: [] as ConversationSummary[],
+  workspaces: [] as string[],
+  mcp: [] as McpServerStatus[],
+  mode: "chat" as Kind,
+  current: null as Conversation | null,
+  draft: { webSearch: false, mcp: true, permissionMode: "ask" } as Draft,
+  /** Exécution en cours (génération ou outil). */
+  busy: null as { requestId: string; msgId: string; stopped: boolean } | null,
+  pending: { images: [] as string[], files: [] as TextFile[] },
+  selectedModel: "",
+  risks: new Map<string, Risk>(),
+  approvals: new Map<string, (d: "allow" | "always" | "deny") => void>(),
+};
+
+const uid = () => crypto.randomUUID();
+const basename = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+
+// ---------------------------------------------------------------- utilitaires
+
+let toastTimer = 0;
+function toast(msg: string, isError = false) {
+  el.toast.textContent = msg;
+  el.toast.className = isError ? "error" : "";
+  el.toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => (el.toast.hidden = true), isError ? 6000 : 2500);
+}
+
+const errMsg = (e: unknown) => (typeof e === "string" ? e : e instanceof Error ? e.message : JSON.stringify(e));
+
+function applyTheme(theme: Settings["theme"]) {
+  if (theme === "system") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.dataset.theme = theme;
+}
+
+async function copy(text: string, btn?: HTMLElement) {
+  await navigator.clipboard.writeText(text);
+  if (btn) {
+    const old = btn.innerHTML;
+    btn.textContent = "Copié";
+    setTimeout(() => (btn.innerHTML = old), 1200);
+  }
+}
+
+const icons = {
+  copy: '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>',
+  retry: '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>',
+  edit: '<svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
+  trash: '<svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>',
+  file: '<svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>',
+  folder: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+};
+
+// ---------------------------------------------------------------- modèles
+
+function modelIds(): string[] {
+  const ids = state.models.length ? state.models.map((m) => m.id) : [...FALLBACK_MODELS];
+  for (const extra of [state.settings.defaultModel, state.settings.codeModel, state.current?.model, state.selectedModel]) {
+    if (extra && !ids.includes(extra)) ids.unshift(extra);
+  }
+  return ids;
+}
+
+function fillModelSelect(select: HTMLSelectElement, value: string) {
+  select.innerHTML = modelIds()
+    .map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`)
+    .join("");
+  select.value = value;
+}
+
+async function loadModels() {
+  if (!state.keyConfigured) return;
+  try {
+    state.models = await api.listModels();
+  } catch (e) {
+    toast(`Liste des modèles indisponible : ${errMsg(e)}`, true);
+  }
+  fillModelSelect(el.modelSelect, state.selectedModel);
+}
+
+const modelInfo = (id: string) => state.models.find((m) => m.id === id);
+const defaultModelFor = (kind: Kind) => (kind === "code" ? state.settings.codeModel : state.settings.defaultModel);
+
+// ---------------------------------------------------------------- barre latérale
+
+function dayBucket(ts: number): string {
+  const d = new Date(ts);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diff = (today.getTime() - new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()) / 86400000;
+  if (diff <= 0) return "Aujourd'hui";
+  if (diff === 1) return "Hier";
+  if (diff < 7) return "7 derniers jours";
+  if (diff < 30) return "30 derniers jours";
+  return d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+}
+
+function renderSidebar() {
+  document.querySelectorAll<HTMLElement>(".mode-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.mode === state.mode));
+  el.newChatLabel.textContent = state.mode === "code" ? "Nouvelle session de code" : "Nouvelle conversation";
+  const q = el.search.value.trim().toLowerCase();
+  const list = state.convs.filter((c) => c.kind === state.mode && (!q || c.title.toLowerCase().includes(q)));
+  let html = "";
+  let bucket = "";
+  for (const c of list) {
+    const b = dayBucket(c.updatedAt);
+    if (b !== bucket) {
+      html += `<div class="group">${escapeHtml(b)}</div>`;
+      bucket = b;
+    }
+    const active = c.id === state.current?.id ? " active" : "";
+    const sub = c.workspace ? `<span class="conv-sub">${escapeHtml(basename(c.workspace))}</span>` : "";
+    html += `<div class="conv${active}" data-id="${c.id}">
+      <span class="conv-text"><span class="conv-title">${escapeHtml(c.title)}</span>${sub}</span>
+      <span class="conv-actions">
+        <button class="icon-btn sm" data-act="rename" title="Renommer">${icons.edit}</button>
+        <button class="icon-btn sm" data-act="delete" title="Supprimer">${icons.trash}</button>
+      </span>
+    </div>`;
+  }
+  const empty = q ? "Aucun résultat" : state.mode === "code" ? "Aucune session de code" : "Aucune conversation";
+  el.convList.innerHTML = html || `<p class="empty-list">${empty}</p>`;
+}
+
+async function refreshConvs() {
+  state.convs = await api.listConversations();
+  renderSidebar();
+}
+
+el.search.addEventListener("input", renderSidebar);
+
+document.querySelector(".mode-tabs")!.addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-mode]");
+  if (b) setMode(b.dataset.mode as Kind);
+});
+
+function setMode(mode: Kind) {
+  if (state.mode === mode && !state.current) return;
+  state.mode = mode;
+  newChat();
+}
+
+el.convList.addEventListener("click", async (ev) => {
+  const target = ev.target as HTMLElement;
+  const row = target.closest<HTMLElement>(".conv");
+  if (!row) return;
+  const id = row.dataset.id!;
+  const act = target.closest<HTMLElement>("[data-act]")?.dataset.act;
+
+  if (act === "delete") {
+    const btn = target.closest<HTMLElement>("[data-act]")!;
+    if (!btn.classList.contains("confirm")) {
+      btn.classList.add("confirm");
+      btn.title = "Cliquer à nouveau pour confirmer";
+      setTimeout(() => btn.classList.remove("confirm"), 3000);
+      return;
+    }
+    if (state.busy && state.current?.id === id) await stop();
+    await api.deleteConversation(id);
+    if (state.current?.id === id) newChat();
+    await refreshConvs();
+    return;
+  }
+
+  if (act === "rename") {
+    const titleEl = row.querySelector<HTMLElement>(".conv-title")!;
+    const input = document.createElement("input");
+    input.className = "rename";
+    input.value = titleEl.textContent ?? "";
+    titleEl.replaceWith(input);
+    input.focus();
+    input.select();
+    let done = false;
+    const finish = async (save: boolean) => {
+      if (done) return;
+      done = true;
+      const title = input.value.trim();
+      if (save && title) {
+        const conv = state.current?.id === id ? state.current : await api.loadConversation(id);
+        conv.title = title;
+        await api.saveConversation(conv);
+        if (state.current?.id === id) el.title.textContent = title;
+      }
+      await refreshConvs();
+    };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") finish(true);
+      if (e.key === "Escape") finish(false);
+    });
+    input.addEventListener("blur", () => finish(true));
+    return;
+  }
+
+  if (state.current?.id !== id) await openConversation(id);
+});
+
+async function openConversation(id: string) {
+  if (state.busy) {
+    toast("Arrêtez la génération en cours avant de changer de conversation.", true);
+    return;
+  }
+  try {
+    state.current = await api.loadConversation(id);
+  } catch (e) {
+    toast(errMsg(e), true);
+    return;
+  }
+  state.current.kind ??= "chat";
+  state.mode = state.current.kind;
+  state.selectedModel = state.current.model || defaultModelFor(state.mode);
+  fillModelSelect(el.modelSelect, state.selectedModel);
+  if (state.current.workspace) api.touchWorkspace(state.current.workspace).catch(() => {});
+  renderSidebar();
+  renderConversation();
+  el.input.focus();
+}
+
+function newChat() {
+  if (state.busy) {
+    toast("Arrêtez la génération en cours d'abord.", true);
+    return;
+  }
+  state.current = null;
+  state.draft = {
+    workspace: state.mode === "code" ? state.workspaces[0] : undefined,
+    webSearch: state.settings.webSearchDefault,
+    mcp: true,
+    permissionMode: "ask",
+  };
+  state.selectedModel = defaultModelFor(state.mode);
+  fillModelSelect(el.modelSelect, state.selectedModel);
+  renderSidebar();
+  renderConversation();
+  el.input.focus();
+}
+
+// ---------------------------------------------------------------- options de la conversation
+
+/** Options effectives : celles de la conversation ouverte, sinon du brouillon. */
+const opts = () => {
+  const c = state.current;
+  return {
+    kind: c?.kind ?? state.mode,
+    workspace: c ? c.workspace : state.draft.workspace,
+    webSearch: c ? !!c.webSearch : state.draft.webSearch,
+    mcp: c ? c.mcp !== false : state.draft.mcp,
+    permissionMode: (c ? c.permissionMode : state.draft.permissionMode) ?? "ask",
+  };
+};
+
+function setOpt<K extends keyof Draft>(key: K, value: Draft[K]) {
+  if (state.current) {
+    (state.current as unknown as Draft)[key] = value;
+    saveCurrent();
+  } else {
+    state.draft[key] = value;
+  }
+  renderChrome();
+}
+
+const mcpToolCount = () => state.mcp.filter((s) => s.state === "ready").reduce((n, s) => n + s.tools.length, 0);
+
+/** Barre du haut et bascules du compositeur. */
+function renderChrome() {
+  const c = state.current;
+  const o = opts();
+  el.title.textContent = c?.title ?? (o.kind === "code" ? "Nouvelle session de code" : "Nouvelle conversation");
+  el.exportBtn.hidden = !c;
+  el.wsChip.hidden = o.kind !== "code" || !o.workspace;
+  if (o.workspace) {
+    el.wsChip.querySelector("span")!.textContent = basename(o.workspace);
+    el.wsChip.title = o.workspace;
+  }
+  el.permSelect.hidden = o.kind !== "code";
+  el.permSelect.value = o.permissionMode;
+  el.webToggle.classList.toggle("on", o.webSearch);
+  const configured = state.mcp.filter((s) => s.state !== "disabled").length;
+  el.mcpToggle.hidden = configured === 0;
+  el.mcpToggle.classList.toggle("on", o.mcp);
+  el.mcpToggle.querySelector("span")!.textContent = `MCP ${mcpToolCount()}`;
+  el.mcpToggle.title = state.mcp.map((s) => `${s.name} : ${s.state === "ready" ? `${s.tools.length} outils` : s.state}`).join("\n");
+  el.input.placeholder = o.kind === "code" ? "Décrivez la tâche à réaliser dans le projet…" : "Écrivez à Mistral…";
+  updateComposerState();
+}
+
+el.webToggle.addEventListener("click", () => setOpt("webSearch", !opts().webSearch));
+el.mcpToggle.addEventListener("click", () => setOpt("mcp", !opts().mcp));
+el.permSelect.addEventListener("change", () => setOpt("permissionMode", el.permSelect.value as PermissionMode));
+el.wsChip.addEventListener("click", () => {
+  const ws = opts().workspace;
+  if (ws) revealItemInDir(ws).catch((e) => toast(errMsg(e), true));
+});
+
+async function chooseWorkspace() {
+  try {
+    const path = await api.pickWorkspace();
+    if (!path) return;
+    state.workspaces = await api.listWorkspaces();
+    state.draft.workspace = path;
+    renderConversation();
+    el.input.focus();
+  } catch (e) {
+    toast(errMsg(e), true);
+  }
+}
+
+// ---------------------------------------------------------------- messages
+
+function renderWelcome() {
+  if (!state.keyConfigured) {
+    el.messages.innerHTML = `<div class="welcome"><h2>Bienvenue</h2>
+      <p>Pour commencer, ajoutez votre clé API Mistral.</p>
+      <p class="muted small">Elle reste sur cet appareil, dans le trousseau du système.</p>
+      <p><button class="btn-primary" data-open-settings>Configurer la clé API</button></p>
+      <p class="muted small"><a href="https://console.mistral.ai/api-keys" data-external>Créer une clé sur console.mistral.ai</a></p>
+    </div>`;
+    return;
+  }
+  if (state.mode === "code") {
+    const ws = state.draft.workspace;
+    const recent = state.workspaces
+      .filter((w) => w !== ws)
+      .slice(0, 6)
+      .map((w) => `<button class="ws-item" data-ws="${escapeHtml(w)}" title="${escapeHtml(w)}">${icons.folder}<span>${escapeHtml(basename(w))}</span><small>${escapeHtml(w)}</small></button>`)
+      .join("");
+    el.messages.innerHTML = `<div class="welcome code">
+      <h2>Agent de code</h2>
+      <p>L'agent explore, modifie et teste le code d'un dossier de votre machine. Chaque modification et commande peut être soumise à votre approbation.</p>
+      ${ws
+        ? `<div class="ws-current">${icons.folder}<div><strong>${escapeHtml(basename(ws))}</strong><small>${escapeHtml(ws)}</small></div><button class="btn-ghost sm" data-pick-ws>Changer</button></div>`
+        : `<p><button class="btn-primary" data-pick-ws>${icons.folder} Ouvrir un dossier</button></p>`}
+      ${recent ? `<div class="ws-recent"><div class="group">Récents</div>${recent}</div>` : ""}
+    </div>`;
+    return;
+  }
+  const hour = new Date().getHours();
+  const greet = hour < 6 || hour >= 18 ? "Bonsoir" : "Bonjour";
+  el.messages.innerHTML = `<div class="welcome"><h2>${greet} 👋</h2><p>Comment puis-je vous aider ?</p></div>`;
+}
+
+function messageHtml(m: Message, next: Message | undefined): string {
+  if (m.role === "user") {
+    const imgs = (m.images ?? []).map((src) => `<img src="${src}" alt="image jointe" />`).join("");
+    const files = (m.files ?? []).map((f) => `<span class="chip">${icons.file}${escapeHtml(f.name)}</span>`).join("");
+    return `<div class="msg user" data-id="${m.id}">
+      ${imgs || files ? `<div class="msg-attachments">${imgs}${files}</div>` : ""}
+      <div class="bubble">${escapeHtml(m.content).replace(/\n/g, "<br>")}</div>
+      <div class="msg-actions">
+        <button class="icon-btn sm" data-act="copy" title="Copier">${icons.copy}</button>
+        <button class="icon-btn sm" data-act="edit" title="Modifier et renvoyer">${icons.edit}</button>
+      </div>
+    </div>`;
+  }
+  const streaming = state.busy?.msgId === m.id;
+  const reasoning = m.reasoning
+    ? `<details class="reasoning"${streaming && !m.content ? " open" : ""}><summary>Raisonnement</summary><div class="md">${renderMarkdown(m.reasoning)}</div></details>`
+    : "";
+  const tools = (m.toolCalls ?? []).map((tc) => toolCardHtml(tc, state.risks.get(tc.name) ?? guessRisk(tc.name))).join("");
+  const body = m.content
+    ? renderMarkdown(m.content)
+    : streaming && !m.reasoning && !tools ? '<span class="typing"><i></i><i></i><i></i></span>' : "";
+  const meta = [m.model, m.usage ? `${m.usage.promptTokens} → ${m.usage.completionTokens} tokens` : "", m.cancelled ? "interrompu" : ""]
+    .filter(Boolean)
+    .join(" · ");
+  const error = m.error
+    ? `<div class="msg-error">${escapeHtml(m.error)} <button class="btn-ghost sm" data-act="retry">Réessayer</button></div>`
+    : "";
+  const endOfTurn = !next || next.role === "user";
+  const actions = streaming || !endOfTurn
+    ? ""
+    : `<div class="msg-actions">
+        <button class="icon-btn sm" data-act="copy" title="Copier">${icons.copy}</button>
+        ${!next ? `<button class="icon-btn sm" data-act="retry" title="Régénérer">${icons.retry}</button>` : ""}
+        <span class="meta">${escapeHtml(meta)}</span>
+      </div>`;
+  return `<div class="msg assistant${streaming ? " streaming" : ""}" data-id="${m.id}">
+    ${reasoning}${body ? `<div class="md">${body}</div>` : ""}${tools ? `<div class="tools">${tools}</div>` : ""}${error}${actions}
+  </div>`;
+}
+
+/** Risque déduit du nom quand la définition n'est pas (encore) chargée. */
+function guessRisk(name: string): Risk {
+  if (name === "write_file" || name === "edit_file") return "write";
+  if (name === "run_command") return "exec";
+  if (name.startsWith("mcp_")) return "mcp";
+  return "read";
+}
+
+const nearBottom = () => el.messages.scrollHeight - el.messages.scrollTop - el.messages.clientHeight < 120;
+const scrollBottom = () => (el.messages.scrollTop = el.messages.scrollHeight);
+
+function renderConversation() {
+  renderChrome();
+  const c = state.current;
+  if (!c || c.messages.length === 0) return renderWelcome();
+  el.messages.innerHTML = `<div class="thread">${c.messages.map((m, i) => messageHtml(m, c.messages[i + 1])).join("")}</div>`;
+  scrollBottom();
+}
+
+/** Re-rendu d'un seul message, limité à une fois par frame pendant le streaming. */
+const dirty = new Set<Message>();
+let rafPending = false;
+function rerenderMessage(m: Message, force = false) {
+  dirty.add(m);
+  const draw = () => {
+    rafPending = false;
+    const c = state.current;
+    if (!c) return dirty.clear();
+    const stick = nearBottom();
+    for (const msg of dirty) {
+      const node = el.messages.querySelector(`.msg[data-id="${msg.id}"]`);
+      const idx = c.messages.indexOf(msg);
+      if (idx < 0) continue;
+      if (!node) {
+        // Nouveau message (tour suivant de l'agent) : on l'ajoute au fil.
+        const thread = el.messages.querySelector(".thread");
+        if (!thread) {
+          renderConversation();
+          break;
+        }
+        thread.insertAdjacentHTML("beforeend", messageHtml(msg, c.messages[idx + 1]));
+        // Le message précédent perd ses actions de fin de tour.
+        const prev = c.messages[idx - 1];
+        const prevNode = prev && el.messages.querySelector(`.msg[data-id="${prev.id}"]`);
+        if (prevNode) prevNode.outerHTML = messageHtml(prev, msg);
+        continue;
+      }
+      const openDetails = [...node.querySelectorAll("details")].map((d) => d.open);
+      node.outerHTML = messageHtml(msg, c.messages[idx + 1]);
+      const fresh = el.messages.querySelector(`.msg[data-id="${msg.id}"]`);
+      fresh?.querySelectorAll("details").forEach((d, i) => {
+        if (openDetails[i] !== undefined) d.open = openDetails[i];
+      });
+    }
+    dirty.clear();
+    if (stick) scrollBottom();
+  };
+  if (force) return draw();
+  if (!rafPending) {
+    rafPending = true;
+    requestAnimationFrame(draw);
+  }
+}
+
+el.messages.addEventListener("click", async (ev) => {
+  const t = ev.target as HTMLElement;
+  if (t.closest("[data-open-settings]")) return openSettings();
+  if (t.closest("[data-pick-ws]")) return chooseWorkspace();
+  const wsItem = t.closest<HTMLElement>("[data-ws]");
+  if (wsItem) {
+    state.draft.workspace = wsItem.dataset.ws;
+    api.touchWorkspace(wsItem.dataset.ws!).catch(() => {});
+    renderConversation();
+    return el.input.focus();
+  }
+
+  const approve = t.closest<HTMLElement>("[data-approve]");
+  if (approve) {
+    const id = approve.closest<HTMLElement>("[data-tc]")?.dataset.tc;
+    const resolve = id && state.approvals.get(id);
+    if (resolve) resolve(approve.dataset.approve as "allow" | "always" | "deny");
+    return;
+  }
+
+  const codeBtn = t.closest<HTMLElement>(".copy-code");
+  if (codeBtn) {
+    const code = codeBtn.closest(".code-block")?.querySelector("code")?.textContent ?? "";
+    return copy(code, codeBtn);
+  }
+
+  const actBtn = t.closest<HTMLElement>("[data-act]");
+  const msgEl = t.closest<HTMLElement>(".msg");
+  if (!actBtn || !msgEl || !state.current) return;
+  const msg = state.current.messages.find((m) => m.id === msgEl.dataset.id);
+  if (!msg) return;
+
+  switch (actBtn.dataset.act) {
+    case "copy":
+      return copy(turnText(msg), actBtn);
+    case "retry":
+      return regenerate(msg);
+    case "edit":
+      return editMessage(msg, msgEl);
+  }
+});
+
+/** Texte d'un tour complet de l'agent (plusieurs messages assistant consécutifs). */
+function turnText(msg: Message): string {
+  if (msg.role === "user" || !state.current) return msg.content;
+  const msgs = state.current.messages;
+  let i = msgs.indexOf(msg);
+  const parts: string[] = [];
+  while (i >= 0 && msgs[i].role === "assistant") parts.unshift(msgs[i--].content);
+  return parts.filter((p) => p.trim()).join("\n\n");
+}
+
+function editMessage(msg: Message, node: HTMLElement) {
+  if (state.busy) return;
+  const bubble = node.querySelector<HTMLElement>(".bubble")!;
+  const box = document.createElement("div");
+  box.className = "edit-box";
+  box.innerHTML = `<textarea rows="3"></textarea>
+    <div class="row end"><button class="btn-ghost" data-edit="cancel">Annuler</button>
+    <button class="btn-primary" data-edit="send">Envoyer</button></div>`;
+  const ta = box.querySelector("textarea")!;
+  ta.value = msg.content;
+  bubble.replaceWith(box);
+  node.querySelector(".msg-actions")?.remove();
+  ta.focus();
+  autoGrow(ta);
+  ta.addEventListener("input", () => autoGrow(ta));
+  box.addEventListener("click", async (e) => {
+    const action = (e.target as HTMLElement).dataset.edit;
+    if (action === "cancel") renderConversation();
+    if (action === "send") {
+      const text = ta.value.trim();
+      if (!text || !state.current) return;
+      const idx = state.current.messages.findIndex((m) => m.id === msg.id);
+      msg.content = text;
+      state.current.messages = state.current.messages.slice(0, idx + 1);
+      await runAgent();
+    }
+  });
+}
+
+async function regenerate(msg: Message) {
+  if (state.busy || !state.current) return;
+  const msgs = state.current.messages;
+  let idx = msgs.indexOf(msg);
+  // On repart du dernier message utilisateur précédant ce tour.
+  while (idx >= 0 && msgs[idx].role !== "user") idx--;
+  if (idx < 0) return;
+  state.current.messages = msgs.slice(0, idx + 1);
+  renderConversation();
+  await runAgent();
+}
+
+// ---------------------------------------------------------------- envoi et boucle d'agent
+
+async function saveCurrent() {
+  if (!state.current) return;
+  state.current.updatedAt = Date.now();
+  try {
+    await api.saveConversation(state.current);
+    await refreshConvs();
+  } catch (e) {
+    toast(`Sauvegarde impossible : ${errMsg(e)}`, true);
+  }
+}
+
+async function send() {
+  if (state.busy) return stop();
+  const text = el.input.value.trim();
+  const { images, files } = state.pending;
+  if (!text && !images.length && !files.length) return;
+  if (!state.keyConfigured) return openSettings();
+
+  const o = opts();
+  if (o.kind === "code" && !o.workspace) {
+    toast("Choisissez d'abord un dossier de projet.", true);
+    return chooseWorkspace();
+  }
+  const model = state.selectedModel;
+  if (images.length && modelInfo(model)?.vision === false) {
+    toast(`Le modèle ${model} ne gère pas les images. Choisissez par ex. mistral-medium-latest.`, true);
+    return;
+  }
+
+  if (!state.current) {
+    const now = Date.now();
+    const title = (text || files[0]?.name || "Image").replace(/\s+/g, " ").slice(0, 60);
+    state.current = {
+      id: uid(),
+      title,
+      kind: o.kind,
+      model,
+      createdAt: now,
+      updatedAt: now,
+      systemPrompt: state.settings.systemPrompt || null,
+      messages: [],
+      workspace: o.workspace,
+      permissionMode: o.permissionMode,
+      webSearch: o.webSearch,
+      mcp: o.mcp,
+    };
+  }
+  state.current.messages.push({
+    id: uid(),
+    role: "user",
+    content: text,
+    createdAt: Date.now(),
+    ...(images.length ? { images: [...images] } : {}),
+    ...(files.length ? { files: [...files] } : {}),
+  });
+  el.input.value = "";
+  autoGrow(el.input);
+  state.pending = { images: [], files: [] };
+  renderAttachments();
+  await runAgent();
+}
+
+const toolCtx = (c: Conversation): ToolContext => ({
+  workspace: c.kind === "code" ? c.workspace : undefined,
+  web: !!c.webSearch,
+  mcp: c.mcp !== false,
+});
+
+/** Un tour du modèle en streaming. Renvoie false en cas d'erreur ou d'arrêt. */
+async function streamTurn(conv: Conversation, msg: Message, tools: Awaited<ReturnType<typeof api.toolDefinitions>>): Promise<boolean> {
+  const requestId = uid();
+  if (state.busy) Object.assign(state.busy, { requestId, msgId: msg.id });
+  const messages = toApiMessages({ ...conv, messages: conv.messages.filter((m) => m !== msg) }, systemPrompt(conv, state.settings, state.platform));
+  let ok = true;
+  try {
+    await api.chat(
+      requestId,
+      {
+        model: conv.model,
+        messages,
+        temperature: state.settings.temperature,
+        maxTokens: state.settings.maxTokens,
+        tools: tools.map((t) => t.definition),
+      },
+      (ev) => {
+        switch (ev.type) {
+          case "delta":
+            msg.content += ev.text;
+            break;
+          case "reasoning":
+            msg.reasoning = (msg.reasoning ?? "") + ev.text;
+            break;
+          case "usage":
+            msg.usage = { promptTokens: ev.promptTokens, completionTokens: ev.completionTokens };
+            break;
+          case "toolCalls":
+            msg.toolCalls = ev.calls.map((c) => ({ ...c, status: "queued" as const }));
+            break;
+          case "done":
+            if (ev.cancelled) {
+              msg.cancelled = true;
+              ok = false;
+            }
+            if (ev.finishReason === "length") {
+              msg.error = "Réponse tronquée (limite de tokens atteinte).";
+              ok = false;
+            }
+            break;
+        }
+        rerenderMessage(msg);
+      },
+    );
+  } catch (e) {
+    msg.error = errMsg(e);
+    ok = false;
+  }
+  if (!ok) {
+    // Appels d'outils jamais exécutés : on les marque pour garder un historique valide.
+    for (const tc of msg.toolCalls ?? []) {
+      tc.status = "denied";
+      tc.result = "Non exécuté (interrompu).";
+    }
+  }
+  return ok && !state.busy?.stopped;
+}
+
+function waitApproval(tc: ToolCallRec): Promise<"allow" | "always" | "deny"> {
+  return new Promise((resolve) => {
+    state.approvals.set(tc.id, (d) => {
+      state.approvals.delete(tc.id);
+      resolve(d);
+    });
+  });
+}
+
+/** Exécute les appels d'outils d'un message. Renvoie false si la boucle doit s'arrêter. */
+async function runToolCalls(conv: Conversation, msg: Message): Promise<boolean> {
+  const ctx = toolCtx(conv);
+  const calls = msg.toolCalls ?? [];
+  for (let i = 0; i < calls.length; i++) {
+    const tc = calls[i];
+    const skipRest = (reason: string) => {
+      for (const rest of calls.slice(i)) {
+        if (rest.status === "queued" || rest.status === "pending" || rest.status === "running") {
+          rest.status = "denied";
+          rest.result ??= reason;
+        }
+      }
+      rerenderMessage(msg, true);
+      return false;
+    };
+    if (state.busy?.stopped) return skipRest("Non exécuté : arrêté par l'utilisateur.");
+
+    const risk = state.risks.get(tc.name) ?? guessRisk(tc.name);
+    if (needsApproval(risk, tc.name, conv.permissionMode ?? "ask", state.settings)) {
+      if (risk === "write") {
+        try {
+          tc.diff = (await api.previewTool(ctx, tc.name, tc.arguments)) ?? undefined;
+        } catch (e) {
+          // Modification impossible (texte introuvable…) : on renvoie l'erreur au modèle sans déranger l'utilisateur.
+          tc.status = "error";
+          tc.result = `Erreur : ${errMsg(e)}`;
+          rerenderMessage(msg, true);
+          continue;
+        }
+      }
+      tc.status = "pending";
+      rerenderMessage(msg, true);
+      scrollBottom();
+      const decision = await waitApproval(tc);
+      if (decision === "deny") {
+        tc.status = "denied";
+        tc.result = "L'utilisateur a refusé cette action. Arrête-toi et demande-lui comment procéder.";
+        return skipRest("Non exécuté : une action précédente a été refusée.");
+      }
+      if (decision === "always") {
+        if (risk === "mcp") {
+          state.settings.mcpAlwaysAllow = [...new Set([...state.settings.mcpAlwaysAllow, tc.name])];
+          api.saveSettings(state.settings).catch((e) => toast(errMsg(e), true));
+        } else if (risk === "write") {
+          conv.permissionMode = "acceptEdits";
+          renderChrome();
+        }
+      }
+    }
+
+    tc.status = "running";
+    rerenderMessage(msg, true);
+    const requestId = uid();
+    if (state.busy) Object.assign(state.busy, { requestId, msgId: msg.id });
+    try {
+      const out = await api.runTool(requestId, ctx, tc.name, tc.arguments);
+      tc.result = out.content;
+      tc.status = out.isError ? "error" : "done";
+      if (out.diff) tc.diff = out.diff;
+    } catch (e) {
+      tc.result = `Erreur : ${errMsg(e)}`;
+      tc.status = "error";
+    }
+    rerenderMessage(msg, true);
+  }
+  await saveCurrent();
+  return !state.busy?.stopped;
+}
+
+async function runAgent() {
+  const conv = state.current;
+  if (!conv) return;
+  conv.model = state.selectedModel;
+  state.busy = { requestId: "", msgId: "", stopped: false };
+  updateComposerState();
+
+  let tools: Awaited<ReturnType<typeof api.toolDefinitions>> = [];
+  try {
+    tools = await api.toolDefinitions(toolCtx(conv));
+    for (const t of tools) state.risks.set(t.definition.function.name, t.risk);
+  } catch (e) {
+    toast(`Outils indisponibles : ${errMsg(e)}`, true);
+  }
+
+  renderConversation();
+  await saveCurrent();
+  try {
+    for (let step = 0; step < MAX_STEPS[conv.kind]; step++) {
+      const msg: Message = { id: uid(), role: "assistant", content: "", model: conv.model, createdAt: Date.now() };
+      conv.messages.push(msg);
+      rerenderMessage(msg, true);
+      const ok = await streamTurn(conv, msg, tools);
+      if (!msg.content && !msg.reasoning && !msg.toolCalls?.length && !msg.error && !msg.cancelled) {
+        msg.error = "Réponse vide du modèle.";
+      }
+      rerenderMessage(msg, true);
+      await saveCurrent();
+      if (!ok || !msg.toolCalls?.length) break;
+      if (!(await runToolCalls(conv, msg))) break;
+      if (step === MAX_STEPS[conv.kind] - 1) {
+        toast(`Limite de ${MAX_STEPS[conv.kind]} étapes atteinte : envoyez « continue » pour poursuivre.`);
+      }
+    }
+  } finally {
+    state.busy = null;
+    for (const resolve of state.approvals.values()) resolve("deny");
+    state.approvals.clear();
+    const last = conv.messages[conv.messages.length - 1];
+    if (last) rerenderMessage(last, true);
+    updateComposerState();
+    await saveCurrent();
+  }
+}
+
+async function stop() {
+  const b = state.busy;
+  if (!b) return;
+  b.stopped = true;
+  for (const resolve of [...state.approvals.values()]) resolve("deny");
+  if (b.requestId) await api.cancel(b.requestId).catch(() => {});
+}
+
+function updateComposerState() {
+  el.app.classList.toggle("is-streaming", !!state.busy);
+  el.sendBtn.title = state.busy ? "Arrêter (Échap)" : "Envoyer";
+  el.hint.textContent = state.settings?.sendOnEnter ? "Entrée pour envoyer · Maj+Entrée pour un retour ligne" : "Ctrl+Entrée pour envoyer";
+}
+
+function autoGrow(ta: HTMLTextAreaElement) {
+  ta.style.height = "auto";
+  ta.style.height = `${Math.min(ta.scrollHeight, 320)}px`;
+}
+
+el.composer.addEventListener("submit", (e) => {
+  e.preventDefault();
+  send();
+});
+el.input.addEventListener("input", () => autoGrow(el.input));
+el.input.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || e.isComposing) return;
+  const mod = e.ctrlKey || e.metaKey;
+  if ((state.settings.sendOnEnter && !e.shiftKey) || mod) {
+    e.preventDefault();
+    send();
+  }
+});
+el.modelSelect.addEventListener("change", () => {
+  state.selectedModel = el.modelSelect.value;
+});
+el.exportBtn.addEventListener("click", async () => {
+  if (!state.current) return;
+  try {
+    if (await api.exportConversation(state.current.id)) toast("Conversation exportée");
+  } catch (e) {
+    toast(errMsg(e), true);
+  }
+});
+
+// ---------------------------------------------------------------- pièces jointes
+
+function renderAttachments() {
+  const { images, files } = state.pending;
+  el.attachments.innerHTML =
+    images.map((src, i) => `<span class="att img"><img src="${src}" alt="" /><button type="button" data-rm="img:${i}" title="Retirer">×</button></span>`).join("") +
+    files.map((f, i) => `<span class="att chip">${icons.file}${escapeHtml(f.name)}<button type="button" data-rm="file:${i}" title="Retirer">×</button></span>`).join("");
+}
+
+el.attachments.addEventListener("click", (e) => {
+  const rm = (e.target as HTMLElement).dataset.rm;
+  if (!rm) return;
+  const [kind, i] = rm.split(":");
+  if (kind === "img") state.pending.images.splice(+i, 1);
+  else state.pending.files.splice(+i, 1);
+  renderAttachments();
+});
+
+const readAsDataUrl = (f: Blob) =>
+  new Promise<string>((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result as string);
+    r.onerror = () => rej(r.error);
+    r.readAsDataURL(f);
+  });
+
+/** Redimensionne localement les grandes images pour limiter le volume envoyé. */
+async function imageToDataUrl(file: File): Promise<string> {
+  const url = await readAsDataUrl(file);
+  const img = new Image();
+  await new Promise((res, rej) => {
+    img.onload = res;
+    img.onerror = rej;
+    img.src = url;
+  });
+  const scale = Math.min(1, MAX_IMAGE_SIDE / Math.max(img.width, img.height));
+  if (scale === 1 && file.size < 4 * 1024 * 1024) return url;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(img.width * scale);
+  canvas.height = Math.round(img.height * scale);
+  canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.88);
+}
+
+async function addPdf(file: File) {
+  if (file.size > MAX_PDF) throw new Error(`trop volumineux (max ${MAX_PDF / 1048576} Mo)`);
+  const placeholder: TextFile = { name: `${file.name} (conversion…)`, text: "" };
+  state.pending.files.push(placeholder);
+  renderAttachments();
+  try {
+    const b64 = (await readAsDataUrl(file)).split(",")[1];
+    const { text, method } = await api.processDocument(file.name, b64);
+    if (!text.trim()) throw new Error("aucun texte extrait");
+    placeholder.name = method === "ocr" ? `${file.name} (OCR)` : file.name;
+    placeholder.text = text;
+  } catch (e) {
+    state.pending.files.splice(state.pending.files.indexOf(placeholder), 1);
+    throw e;
+  } finally {
+    renderAttachments();
+  }
+}
+
+async function addFiles(list: Iterable<File>) {
+  for (const file of list) {
+    try {
+      if (/^image\/(png|jpe?g|webp|gif)$/.test(file.type)) {
+        state.pending.images.push(await imageToDataUrl(file));
+        renderAttachments();
+        continue;
+      }
+      if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) {
+        await addPdf(file);
+        continue;
+      }
+      if (file.size > MAX_TEXT_FILE) {
+        toast(`${file.name} : trop volumineux (max ${MAX_TEXT_FILE / 1024} Ko)`, true);
+        continue;
+      }
+      const buf = new Uint8Array(await file.arrayBuffer());
+      if (buf.subarray(0, 8000).includes(0)) {
+        toast(`${file.name} : format non pris en charge (images, PDF et fichiers texte uniquement)`, true);
+        continue;
+      }
+      state.pending.files.push({ name: file.name, text: new TextDecoder().decode(buf) });
+      renderAttachments();
+    } catch (e) {
+      toast(`${file.name} : ${errMsg(e)}`, true);
+    }
+  }
+  el.input.focus();
+}
+
+$("#attach-btn").addEventListener("click", () => el.fileInput.click());
+el.fileInput.addEventListener("change", async () => {
+  await addFiles(el.fileInput.files ?? []);
+  el.fileInput.value = "";
+});
+el.input.addEventListener("paste", (e) => {
+  const files = [...(e.clipboardData?.files ?? [])];
+  if (files.length) {
+    e.preventDefault();
+    addFiles(files);
+  }
+});
+
+let dragDepth = 0;
+const hasFiles = (e: DragEvent) => e.dataTransfer?.types.includes("Files");
+window.addEventListener("dragenter", (e) => {
+  if (!hasFiles(e)) return;
+  dragDepth++;
+  el.drop.hidden = false;
+});
+window.addEventListener("dragleave", () => {
+  if (--dragDepth <= 0) {
+    dragDepth = 0;
+    el.drop.hidden = true;
+  }
+});
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  el.drop.hidden = true;
+  if (e.dataTransfer?.files.length) addFiles(e.dataTransfer.files);
+});
+
+// ---------------------------------------------------------------- réglages
+
+const s = {
+  apiKey: $<HTMLInputElement>("#api-key"),
+  keyStatus: $("#key-status"),
+  model: $<HTMLSelectElement>("#s-model"),
+  system: $<HTMLTextAreaElement>("#s-system"),
+  temp: $<HTMLInputElement>("#s-temp"),
+  max: $<HTMLInputElement>("#s-max"),
+  theme: $<HTMLSelectElement>("#s-theme"),
+  enter: $<HTMLInputElement>("#s-enter"),
+  base: $<HTMLInputElement>("#s-base"),
+  webProvider: $<HTMLSelectElement>("#s-web-provider"),
+  searx: $<HTMLInputElement>("#s-searx"),
+  searxWrap: $("#s-searx-wrap"),
+  webDefault: $<HTMLInputElement>("#s-web-default"),
+  pdf: $<HTMLSelectElement>("#s-pdf"),
+  codeModel: $<HTMLSelectElement>("#s-code-model"),
+  timeout: $<HTMLInputElement>("#s-timeout"),
+  mcp: $<HTMLTextAreaElement>("#s-mcp"),
+  mcpStatus: $("#mcp-status"),
+  mcpAllowed: $("#mcp-allowed"),
+  wsList: $("#ws-list"),
+  error: $("#settings-error"),
+};
+
+const MCP_EXAMPLE = `{
+  "mcpServers": {
+    "fichiers": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/chemin/vers/dossier"]
+    },
+    "serveur-distant": {
+      "url": "https://mcp.example.org/mcp",
+      "headers": { "Authorization": "Bearer VOTRE_JETON" },
+      "disabled": true
+    }
+  }
+}
+`;
+
+async function refreshKeyStatus() {
+  const st = await api.keyStatus();
+  state.keyConfigured = st.configured;
+  s.keyStatus.textContent = !st.configured
+    ? "Aucune clé configurée."
+    : st.source === "keyring"
+      ? "✓ Clé enregistrée dans le trousseau du système."
+      : "✓ Clé lue depuis la variable d'environnement MISTRAL_API_KEY.";
+}
+
+function showTab(tab: string) {
+  document.querySelectorAll<HTMLElement>(".settings-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  document.querySelectorAll<HTMLElement>("#settings .tab").forEach((t) => (t.hidden = t.dataset.tab !== tab));
+}
+document.querySelector(".settings-tabs")!.addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-tab]");
+  if (b) showTab(b.dataset.tab!);
+});
+
+const STATE_LABEL = { starting: "démarrage…", ready: "connecté", error: "erreur", disabled: "désactivé" };
+
+function renderMcpStatus() {
+  s.mcpStatus.innerHTML = state.mcp
+    .map(
+      (m) => `<div class="mcp-server" data-state="${m.state}">
+        <div class="row"><span class="dot"></span><strong>${escapeHtml(m.name)}</strong>
+          <span class="muted small">${m.transport}${m.protocol ? ` · ${escapeHtml(m.protocol)}` : ""} · ${STATE_LABEL[m.state]}${m.state === "ready" ? ` · ${m.tools.length} outils` : ""}</span></div>
+        ${m.error ? `<pre class="small">${escapeHtml(m.error)}</pre>` : ""}
+        ${m.tools.length ? `<details><summary class="small">Outils</summary><ul class="small">${m.tools.map((t) => `<li><code>${escapeHtml(t.name)}</code> ${escapeHtml(t.description.slice(0, 140))}</li>`).join("")}</ul></details>` : ""}
+      </div>`,
+    )
+    .join("");
+  const allowed = state.settings.mcpAlwaysAllow;
+  s.mcpAllowed.innerHTML = allowed.length
+    ? allowed.map((n) => `<span class="chip">${escapeHtml(n)}<button type="button" data-unallow="${escapeHtml(n)}" title="Retirer">×</button></span>`).join("")
+    : '<p class="muted small">Aucun. Utilisez « Toujours autoriser » lors d\'une demande d\'approbation.</p>';
+}
+
+s.mcpAllowed.addEventListener("click", (e) => {
+  const n = (e.target as HTMLElement).dataset.unallow;
+  if (!n) return;
+  state.settings.mcpAlwaysAllow = state.settings.mcpAlwaysAllow.filter((x) => x !== n);
+  api.saveSettings(state.settings).catch((err) => toast(errMsg(err), true));
+  renderMcpStatus();
+});
+
+let mcpPoll = 0;
+async function pollMcp() {
+  clearTimeout(mcpPoll);
+  try {
+    state.mcp = await api.mcpStatus();
+  } catch {
+    return;
+  }
+  if (el.settings.open) renderMcpStatus();
+  renderChrome();
+  if (state.mcp.some((m) => m.state === "starting")) mcpPoll = window.setTimeout(pollMcp, 800);
+}
+
+$("#mcp-apply").addEventListener("click", async () => {
+  s.error.hidden = true;
+  try {
+    await api.mcpSaveConfig(s.mcp.value);
+    toast("Configuration MCP appliquée");
+    pollMcp();
+  } catch (e) {
+    s.error.textContent = errMsg(e);
+    s.error.hidden = false;
+  }
+});
+$("#mcp-example").addEventListener("click", () => {
+  s.mcp.value = MCP_EXAMPLE;
+});
+
+function renderWsList() {
+  s.wsList.innerHTML = state.workspaces.length
+    ? state.workspaces.map((w) => `<div class="ws-row"><code>${escapeHtml(w)}</code><button type="button" class="btn-ghost sm danger" data-forget="${escapeHtml(w)}">Retirer</button></div>`).join("")
+    : '<p class="muted small">Aucun dossier.</p>';
+}
+s.wsList.addEventListener("click", async (e) => {
+  const w = (e.target as HTMLElement).dataset.forget;
+  if (!w) return;
+  state.workspaces = await api.forgetWorkspace(w);
+  if (state.draft.workspace === w) state.draft.workspace = undefined;
+  renderWsList();
+});
+
+s.webProvider.addEventListener("change", () => (s.searxWrap.hidden = s.webProvider.value !== "searxng"));
+
+async function openSettings(tab = "general") {
+  const st = state.settings;
+  await refreshKeyStatus();
+  s.apiKey.value = "";
+  fillModelSelect(s.model, st.defaultModel);
+  fillModelSelect(s.codeModel, st.codeModel);
+  s.system.value = st.systemPrompt;
+  s.temp.value = st.temperature?.toString() ?? "";
+  s.max.value = st.maxTokens?.toString() ?? "";
+  s.theme.value = st.theme;
+  s.enter.checked = st.sendOnEnter;
+  s.base.value = st.baseUrl;
+  s.webProvider.value = st.webSearchProvider;
+  s.searx.value = st.searxngUrl;
+  s.searxWrap.hidden = st.webSearchProvider !== "searxng";
+  s.webDefault.checked = st.webSearchDefault;
+  s.pdf.value = st.pdfMode;
+  s.timeout.value = String(st.commandTimeout);
+  s.mcp.value = await api.mcpGetConfig().catch(() => "");
+  s.error.hidden = true;
+  $("#data-dir").textContent = await api.dataDir().catch(() => "?");
+  state.workspaces = await api.listWorkspaces().catch(() => state.workspaces);
+  renderWsList();
+  renderMcpStatus();
+  showTab(tab);
+  el.settings.showModal();
+  pollMcp();
+}
+
+$("#save-key").addEventListener("click", async () => {
+  try {
+    await api.setKey(s.apiKey.value);
+    s.apiKey.value = "";
+    await refreshKeyStatus();
+    await loadModels();
+    fillModelSelect(s.model, s.model.value || state.settings.defaultModel);
+    fillModelSelect(s.codeModel, s.codeModel.value || state.settings.codeModel);
+    if (!state.current) renderWelcome();
+    toast("Clé API enregistrée");
+  } catch (e) {
+    s.error.textContent = errMsg(e);
+    s.error.hidden = false;
+  }
+});
+
+$("#delete-key").addEventListener("click", async () => {
+  await api.deleteKey().catch((e) => toast(errMsg(e), true));
+  await refreshKeyStatus();
+  if (!state.current) renderWelcome();
+});
+
+$("#settings-cancel").addEventListener("click", () => el.settings.close());
+s.theme.addEventListener("change", () => applyTheme(s.theme.value as Settings["theme"]));
+el.settings.addEventListener("close", () => applyTheme(state.settings.theme));
+
+$("#settings-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const num = (v: string) => (v.trim() === "" ? null : Number(v));
+  const next: Settings = {
+    ...state.settings,
+    baseUrl: s.base.value.trim() || "https://api.mistral.ai",
+    defaultModel: s.model.value,
+    systemPrompt: s.system.value,
+    temperature: num(s.temp.value),
+    maxTokens: num(s.max.value),
+    theme: s.theme.value as Settings["theme"],
+    sendOnEnter: s.enter.checked,
+    webSearchProvider: s.webProvider.value as Settings["webSearchProvider"],
+    searxngUrl: s.searx.value.trim(),
+    webSearchDefault: s.webDefault.checked,
+    pdfMode: s.pdf.value as Settings["pdfMode"],
+    codeModel: s.codeModel.value,
+    commandTimeout: Math.max(5, Number(s.timeout.value) || 120),
+  };
+  if (next.webSearchProvider === "searxng" && !/^https?:\/\//.test(next.searxngUrl)) {
+    s.error.textContent = "Indiquez l'URL de votre instance SearXNG (onglet Outils).";
+    s.error.hidden = false;
+    return;
+  }
+  try {
+    const baseChanged = next.baseUrl !== state.settings.baseUrl;
+    await api.saveSettings(next);
+    state.settings = next;
+    applyTheme(next.theme);
+    if (!state.current) {
+      state.selectedModel = defaultModelFor(state.mode);
+      state.draft.webSearch = next.webSearchDefault;
+    }
+    el.settings.close();
+    if (baseChanged) await loadModels();
+    else fillModelSelect(el.modelSelect, state.selectedModel);
+    renderChrome();
+  } catch (err) {
+    s.error.textContent = errMsg(err);
+    s.error.hidden = false;
+  }
+});
+
+$("#open-settings").addEventListener("click", () => openSettings());
+$("#new-chat").addEventListener("click", newChat);
+$("#toggle-sidebar").addEventListener("click", () => el.app.classList.toggle("sidebar-hidden"));
+
+// Liens : toujours dans le navigateur du système, jamais dans la WebView.
+document.addEventListener("click", (e) => {
+  const a = (e.target as HTMLElement).closest("a");
+  if (!a) return;
+  e.preventDefault();
+  const href = a.getAttribute("href") ?? "";
+  if (/^(https?:|mailto:)/i.test(href)) openUrl(href).catch((err) => toast(errMsg(err), true));
+});
+
+window.addEventListener("keydown", (e) => {
+  const mod = e.ctrlKey || e.metaKey;
+  const k = e.key.toLowerCase();
+  if (mod && k === "n") {
+    e.preventDefault();
+    newChat();
+  } else if (mod && e.key === ",") {
+    e.preventDefault();
+    openSettings();
+  } else if (mod && k === "b") {
+    e.preventDefault();
+    el.app.classList.toggle("sidebar-hidden");
+  } else if (mod && k === "k") {
+    e.preventDefault();
+    el.search.focus();
+  } else if (mod && (e.key === "1" || e.key === "2")) {
+    e.preventDefault();
+    setMode(e.key === "1" ? "chat" : "code");
+  } else if (e.key === "Escape" && el.settings.open) {
+    // WebKitGTK ne ferme pas toujours le <dialog> natif avec Échap.
+    e.preventDefault();
+    el.settings.close();
+  } else if (e.key === "Escape" && state.busy) {
+    stop();
+  }
+});
+
+// ---------------------------------------------------------------- démarrage
+
+async function init() {
+  try {
+    state.settings = await api.getSettings();
+  } catch (e) {
+    toast(errMsg(e), true);
+    return;
+  }
+  applyTheme(state.settings.theme);
+  state.platform = await api.platform().catch(() => state.platform);
+  state.workspaces = await api.listWorkspaces().catch(() => []);
+  await refreshKeyStatus();
+  newChat();
+  await refreshConvs().catch((e) => toast(errMsg(e), true));
+  pollMcp();
+  el.input.focus();
+  await loadModels();
+}
+
+init();

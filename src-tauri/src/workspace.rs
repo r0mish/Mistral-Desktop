@@ -208,7 +208,7 @@ pub fn unified_diff(path: &str, old: &str, new: &str) -> String {
     let mut s = diff
         .unified_diff()
         .context_radius(3)
-        .header(&format!("a/{path}"), &format!("b/{path}"))
+        .header(&format!("a/{}", path.trim_start_matches('/')), &format!("b/{}", path.trim_start_matches('/')))
         .to_string();
     if s.len() > 60_000 {
         let mut cut = 60_000;

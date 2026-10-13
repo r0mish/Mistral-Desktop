@@ -51,6 +51,8 @@ export interface ToolCallRec {
   status: ToolStatus;
   result?: string;
   diff?: string;
+  /** Chemin absolu hors du dossier de projet (accès système). */
+  outside?: string;
 }
 
 export interface Message {
@@ -98,6 +100,8 @@ export interface Conversation {
   permissionMode?: PermissionMode;
   webSearch?: boolean;
   mcp?: boolean;
+  /** Mode Code : fichiers hors du dossier de projet autorisés (avec approbation). */
+  systemAccess?: boolean;
   compaction?: Compaction;
   /** Consommation hors messages (compactions), par modèle. */
   extraUsage?: Record<string, Usage>;
@@ -161,6 +165,7 @@ export interface ToolContext {
   workspace?: string;
   web: boolean;
   mcp: boolean;
+  system?: boolean;
 }
 
 export type Risk = "read" | "write" | "exec" | "mcp";
@@ -298,6 +303,8 @@ export const api = {
   dictationStop: (transcribe: boolean) => invoke<string | null>("dictation_stop", { transcribe }),
 
   toolDefinitions: (ctx: ToolContext) => invoke<ToolDef[]>("tool_definitions", { ctx }),
+  toolOutside: (ctx: ToolContext, name: string, args: string) =>
+    invoke<string | null>("tool_outside", { ctx, name, arguments: args }),
   previewTool: (ctx: ToolContext, name: string, args: string) =>
     invoke<string | null>("preview_tool", { ctx, name, arguments: args }),
   runTool: (requestId: string, ctx: ToolContext, name: string, args: string) =>

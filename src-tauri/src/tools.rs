@@ -24,6 +24,9 @@ pub struct ToolContext {
     pub web: bool,
     #[serde(default)]
     pub mcp: bool,
+    /// Accès système : fichiers hors du dossier de projet autorisés (chemins absolus).
+    #[serde(default)]
+    pub system: bool,
 }
 
 #[derive(Serialize)]
@@ -233,16 +236,49 @@ fn root(ctx: &ToolContext, approved: &[String], hosts: &[SshHost]) -> R<Target> 
     crate::target::resolve(ws, approved, hosts)
 }
 
+/// Outils dont l'argument `path` désigne un fichier ou un dossier.
+const PATH_TOOLS: [&str; 5] = ["list_files", "read_file", "search_files", "write_file", "edit_file"];
+
+/// Cible d'un outil de fichiers : le projet, ou la racine du système si l'accès système est actif
+/// et que `path` en sort. Renvoie la cible et le chemin à lui passer.
+fn target_for(ctx: &ToolContext, approved: &[String], hosts: &[SshHost], path: &str) -> R<(Target, String)> {
+    let t = root(ctx, approved, hosts)?;
+    if t.contains(path) {
+        return Ok((t, path.to_string()));
+    }
+    if !ctx.system {
+        return Err(format!(
+            "Accès refusé : {path} est en dehors du dossier de projet. Pour lire ou modifier des fichiers système, \
+             demande à l'utilisateur d'activer « Accès système » (bouton dans la zone de saisie), puis utilise un chemin absolu."
+        ));
+    }
+    let abs = t.absolute(path);
+    Ok((t.system_root(&abs), abs))
+}
+
+/// Chemin absolu visé par l'appel s'il sort du dossier de projet (accès système), pour l'approbation.
+pub fn outside(ctx: &ToolContext, approved: &[String], hosts: &[SshHost], name: &str, arguments: &str) -> R<Option<String>> {
+    if !ctx.system || !PATH_TOOLS.contains(&name) {
+        return Ok(None);
+    }
+    let args = parse_args(arguments)?;
+    let path = opt_s(&args, "path").unwrap_or(".");
+    let t = root(ctx, approved, hosts)?;
+    Ok((!t.contains(path)).then(|| t.absolute(path)))
+}
+
 /// Diff prévisionnel d'une écriture, pour la demande d'approbation.
 pub async fn preview(ctx: &ToolContext, approved: &[String], hosts: &[SshHost], name: &str, arguments: &str) -> R<Option<String>> {
     let args = parse_args(arguments)?;
     match name {
-        "write_file" => Ok(Some(root(ctx, approved, hosts)?.preview_write(s(&args, "path")?, s(&args, "content")?).await?)),
-        "edit_file" => Ok(Some(
-            root(ctx, approved, hosts)?
-                .preview_edit(s(&args, "path")?, s(&args, "old_string")?, s(&args, "new_string")?, flag(&args, "replace_all"))
-                .await?,
-        )),
+        "write_file" => {
+            let (t, path) = target_for(ctx, approved, hosts, s(&args, "path")?)?;
+            Ok(Some(t.preview_write(&path, s(&args, "content")?).await?))
+        }
+        "edit_file" => {
+            let (t, path) = target_for(ctx, approved, hosts, s(&args, "path")?)?;
+            Ok(Some(t.preview_edit(&path, s(&args, "old_string")?, s(&args, "new_string")?, flag(&args, "replace_all")).await?))
+        }
         _ => Ok(None),
     }
 }
@@ -267,6 +303,7 @@ async fn run_inner(ctx: &ToolContext, env: RunEnv<'_>, name: &str, arguments: &s
     let args = parse_args(arguments)?;
     let text = |content: String| ToolOutput { content, ..Default::default() };
     let target = || root(ctx, env.approved, env.hosts);
+    let target_at = |path: &str| target_for(ctx, env.approved, env.hosts, path);
     match name {
         "web_search" => {
             let q = s(&args, "query")?;
@@ -277,17 +314,26 @@ async fn run_inner(ctx: &ToolContext, env: RunEnv<'_>, name: &str, arguments: &s
             Ok(text(out))
         }
         "fetch_url" => Ok(text(web::fetch_url(s(&args, "url")?, opt_u(&args, "max_chars").unwrap_or(20_000).clamp(1000, 100_000)).await?)),
-        "list_files" => Ok(text(target()?.list_files(opt_s(&args, "path").unwrap_or("."), opt_u(&args, "depth").unwrap_or(2)).await?)),
-        "read_file" => Ok(text(target()?.read_file(s(&args, "path")?, opt_u(&args, "offset"), opt_u(&args, "limit")).await?)),
-        "search_files" => Ok(text(target()?.search(s(&args, "pattern")?, opt_s(&args, "path").unwrap_or("."), opt_s(&args, "glob")).await?)),
+        "list_files" => {
+            let (t, path) = target_at(opt_s(&args, "path").unwrap_or("."))?;
+            Ok(text(t.list_files(&path, opt_u(&args, "depth").unwrap_or(2)).await?))
+        }
+        "read_file" => {
+            let (t, path) = target_at(s(&args, "path")?)?;
+            Ok(text(t.read_file(&path, opt_u(&args, "offset"), opt_u(&args, "limit")).await?))
+        }
+        "search_files" => {
+            let (t, path) = target_at(opt_s(&args, "path").unwrap_or("."))?;
+            Ok(text(t.search(s(&args, "pattern")?, &path, opt_s(&args, "glob")).await?))
+        }
         "write_file" => {
-            let (msg, diff) = target()?.write_file(s(&args, "path")?, s(&args, "content")?).await?;
+            let (t, path) = target_at(s(&args, "path")?)?;
+            let (msg, diff) = t.write_file(&path, s(&args, "content")?).await?;
             Ok(ToolOutput { content: msg, is_error: false, diff: Some(diff) })
         }
         "edit_file" => {
-            let (msg, diff) = target()?
-                .edit_file(s(&args, "path")?, s(&args, "old_string")?, s(&args, "new_string")?, flag(&args, "replace_all"))
-                .await?;
+            let (t, path) = target_at(s(&args, "path")?)?;
+            let (msg, diff) = t.edit_file(&path, s(&args, "old_string")?, s(&args, "new_string")?, flag(&args, "replace_all")).await?;
             Ok(ToolOutput { content: msg, is_error: false, diff: Some(diff) })
         }
         "run_command" => {

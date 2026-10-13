@@ -48,6 +48,7 @@ const el = {
   fileInput: $<HTMLInputElement>("#file-input"),
   webToggle: $<HTMLButtonElement>("#web-toggle"),
   mcpToggle: $<HTMLButtonElement>("#mcp-toggle"),
+  sysToggle: $<HTMLButtonElement>("#sys-toggle"),
   sendBtn: $<HTMLButtonElement>("#send-btn"),
   hint: $("#hint"),
   drop: $("#drop-overlay"),
@@ -108,6 +109,7 @@ interface Draft {
   webSearch: boolean;
   mcp: boolean;
   permissionMode: PermissionMode;
+  systemAccess?: boolean;
   projectId?: string;
 }
 
@@ -467,6 +469,7 @@ const opts = () => {
     workspace: c ? c.workspace : state.draft.workspace,
     webSearch: c ? !!c.webSearch : state.draft.webSearch,
     mcp: c ? c.mcp !== false : state.draft.mcp,
+    systemAccess: !!(c ? c.systemAccess : state.draft.systemAccess),
     permissionMode: (c ? c.permissionMode : state.draft.permissionMode) ?? "ask",
     projectId: c ? c.projectId : state.draft.projectId,
   };
@@ -515,6 +518,8 @@ function renderChrome() {
   const configured = state.mcp.filter((s) => s.state !== "disabled").length;
   el.mcpToggle.hidden = configured === 0;
   el.mcpToggle.classList.toggle("on", o.mcp);
+  el.sysToggle.hidden = o.kind !== "code";
+  el.sysToggle.classList.toggle("on", o.systemAccess);
   el.mcpToggle.querySelector("span")!.textContent = `MCP ${mcpToolCount()}`;
   el.mcpToggle.title = state.mcp.map((s) => `${s.name} : ${s.state === "ready" ? `${s.tools.length} outils` : s.state}`).join("\n");
   el.input.placeholder = o.kind === "code" ? "Décrivez la tâche à réaliser dans le projet…" : "Écrivez à Mistral…";
@@ -525,6 +530,11 @@ function renderChrome() {
 
 el.webToggle.addEventListener("click", () => setOpt("webSearch", !opts().webSearch));
 el.mcpToggle.addEventListener("click", () => setOpt("mcp", !opts().mcp));
+el.sysToggle.addEventListener("click", () => {
+  const on = !opts().systemAccess;
+  setOpt("systemAccess", on);
+  if (on) toast("Accès système activé : l'agent peut lire et modifier des fichiers hors du projet, avec votre approbation.");
+});
 el.permSelect.addEventListener("change", () => setOpt("permissionMode", el.permSelect.value as PermissionMode));
 el.wsChip.addEventListener("click", () => {
   const ws = opts().workspace;
@@ -990,6 +1000,7 @@ async function send() {
       permissionMode: o.permissionMode,
       webSearch: o.webSearch,
       mcp: o.mcp,
+      ...(o.kind === "code" && o.systemAccess ? { systemAccess: true } : {}),
       ...(o.projectId ? { projectId: o.projectId } : {}),
     };
   }
@@ -1012,6 +1023,7 @@ const toolCtx = (c: Conversation): ToolContext => ({
   workspace: c.kind === "code" ? c.workspace : undefined,
   web: !!c.webSearch,
   mcp: c.mcp !== false,
+  system: c.kind === "code" && !!c.systemAccess,
 });
 
 // ---------------------------------------------------------------- activité, contexte, consommation
@@ -1259,7 +1271,11 @@ async function runToolCalls(conv: Conversation, msg: Message): Promise<"ok" | "d
     }
 
     const risk = state.risks.get(tc.name) ?? guessRisk(tc.name);
-    if (needsApproval(risk, tc.name, conv.permissionMode ?? "ask", state.settings)) {
+    // Accès système : un chemin hors du projet demande une approbation renforcée.
+    if (ctx.system && (risk === "read" || risk === "write")) {
+      tc.outside = (await api.toolOutside(ctx, tc.name, tc.arguments).catch(() => null)) ?? undefined;
+    }
+    if (needsApproval(risk, tc.name, conv.permissionMode ?? "ask", state.settings, !!tc.outside)) {
       if (risk === "write") {
         try {
           tc.diff = (await api.previewTool(ctx, tc.name, tc.arguments)) ?? undefined;
@@ -1287,7 +1303,7 @@ async function runToolCalls(conv: Conversation, msg: Message): Promise<"ok" | "d
         if (risk === "mcp") {
           state.settings.mcpAlwaysAllow = [...new Set([...state.settings.mcpAlwaysAllow, tc.name])];
           api.saveSettings(state.settings).catch((e) => toast(errMsg(e), true));
-        } else if (risk === "write") {
+        } else if (risk === "write" && !tc.outside) {
           conv.permissionMode = "acceptEdits";
           renderChrome();
         }

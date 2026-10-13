@@ -47,6 +47,7 @@ Un agent façon Claude Code, propulsé par Devstral, travaille dans un dossier d
 - **Diff coloré** avant chaque modification, approbation commande par commande
 - Trois niveaux de permission par session : **Tout demander**, **Modifs auto** (les commandes restent soumises à approbation), **Autonome**
 - Chaque nouvelle session commence par le **choix du dossier** : dossier local ou dossier d'un serveur SSH, depuis l'écran d'accueil ou le bouton dossier de la zone de saisie (dossiers récents en un clic)
+- **Accès système** (bouton « Système » de la zone de saisie, désactivé par défaut) : l'agent peut lire et modifier des fichiers hors du projet en chemin absolu, par ex. `/etc/fail2ban/jail.local` sur un serveur SSH. Chaque écriture hors projet est soumise à approbation avec son diff (sauf en mode Autonome), les lectures aussi en mode « Tout demander ». Les fichiers réservés à root nécessitent une connexion avec les droits suffisants (pas d'élévation via sudo)
 - Accès **confiné au dossier choisi** via la boîte de dialogue native (chemins `..`, absolus et liens symboliques vers l'extérieur refusés)
 - Commandes non interactives, avec délai max configurable ; l'arrêt tue tout l'arbre de processus
 - **Fichiers de consignes** : `AGENTS.md` (standard ouvert), `MISTRAL.md` ou `CLAUDE.md` à la racine du projet sont lus automatiquement à chaque tâche, en local comme en SSH (indicateur dans la barre du haut). S'il n'y en a pas, l'agent peut le générer en analysant le dépôt

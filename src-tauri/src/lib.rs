@@ -184,6 +184,12 @@ async fn preview_tool(app: AppHandle, ctx: ToolContext, name: String, arguments:
     tools::preview(&ctx, &storage::load_workspaces(&app), &storage::load_ssh_hosts(&app), &name, &arguments).await
 }
 
+/// Chemin hors du dossier de projet visé par un appel (accès système), pour exiger l'approbation.
+#[tauri::command]
+fn tool_outside(app: AppHandle, ctx: ToolContext, name: String, arguments: String) -> CmdResult<Option<String>> {
+    tools::outside(&ctx, &storage::load_workspaces(&app), &storage::load_ssh_hosts(&app), &name, &arguments)
+}
+
 #[tauri::command]
 async fn run_tool(
     app: AppHandle,
@@ -597,6 +603,7 @@ pub fn run() {
             cancel_stream,
             tool_definitions,
             preview_tool,
+            tool_outside,
             run_tool,
             pick_workspace,
             list_workspaces,

@@ -1,7 +1,7 @@
 //! Dossier de projet de l'agent : local, ou distant via SSH.
 //! Les mêmes outils (lecture, recherche, édition, commandes, git) s'appliquent aux deux.
 
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -124,6 +124,48 @@ impl Target {
         match self {
             Target::Remote { root, .. } => remote_path(root, rel),
             Target::Local(_) => Err("chemin local".into()),
+        }
+    }
+
+    /// `path` est-il dans le dossier de projet ?
+    pub fn contains(&self, path: &str) -> bool {
+        match self {
+            Target::Local(r) => workspace::resolve(r, path).is_ok(),
+            Target::Remote { root, .. } => remote_path(root, path).is_ok(),
+        }
+    }
+
+    /// Chemin absolu de `path` (relatif à la racine du projet ou déjà absolu), normalisé.
+    pub fn absolute(&self, path: &str) -> String {
+        let path = path.trim();
+        match self {
+            Target::Local(r) => {
+                let p = Path::new(path);
+                let joined = if p.is_absolute() { p.to_path_buf() } else { r.join(p) };
+                let mut out = PathBuf::new();
+                for c in joined.components() {
+                    match c {
+                        Component::ParentDir => {
+                            out.pop();
+                        }
+                        Component::CurDir => {}
+                        other => out.push(other),
+                    }
+                }
+                workspace::simplify_path(&out).display().to_string()
+            }
+            Target::Remote { root, .. } => {
+                let joined = if path.starts_with('/') { path.to_string() } else { format!("{}/{path}", root.trim_end_matches('/')) };
+                remote_path("/", &joined).unwrap_or(joined)
+            }
+        }
+    }
+
+    /// Accès système : même machine, racine du système de fichiers contenant `abs`.
+    pub fn system_root(&self, abs: &str) -> Target {
+        match self {
+            Target::Local(_) => Target::Local(Path::new(abs).ancestors().last().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("/"))),
+            Target::Remote { host, .. } => Target::Remote { host: host.clone(), root: "/".into() },
         }
     }
 
@@ -400,6 +442,24 @@ mod tests {
         assert_eq!(parse_remote(&ws), Some(("h1", "/var/www/site")));
         assert_eq!(parse_remote("/home/me/projet"), None);
         assert_eq!(parse_remote(r"C:\projet"), None);
+    }
+
+    #[test]
+    fn system_access_paths() {
+        let h = SshHost { id: "h".into(), label: "h".into(), host: "h".into(), port: None, user: None, identity_file: None, system: None };
+        let t = Target::Remote { host: h, root: "/srv/app".into() };
+        assert!(t.contains("src/main.rs") && !t.contains("/etc/fail2ban/jail.local") && !t.contains("../x"));
+        assert_eq!(t.absolute("/etc/fail2ban/jail.local"), "/etc/fail2ban/jail.local");
+        assert_eq!(t.absolute("../other/x"), "/srv/other/x");
+        assert!(t.system_root("/etc/fail2ban/jail.local").contains("/etc/fail2ban/jail.local"));
+
+        let dir = std::env::temp_dir().join(format!("md-sys-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let t = Target::Local(dir.clone());
+        let outside = std::env::temp_dir().join("md-outside.txt").display().to_string();
+        assert!(!t.contains(&outside));
+        assert!(t.system_root(&t.absolute(&outside)).contains(&outside));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]

@@ -39,6 +39,12 @@ const WEB_PROMPT = () =>
   `Utilise-les pour toute information récente, chiffrée ou dont tu n'es pas sûr, puis cite tes sources sous forme de liens Markdown [titre](url). ` +
   `Date du jour : ${today()}.`;
 
+const SYSTEM_ACCESS_PROMPT = `System access is enabled for this session: list_files, read_file, search_files, write_file and edit_file also accept ABSOLUTE paths outside the project root (e.g. /etc/fail2ban/jail.local), on the same machine as the project. The user approves every change outside the project.
+- Read a system file before changing it and keep the existing format and comments.
+- Prefer drop-in/override files when the software supports them (e.g. jail.local, conf.d/, *.d/ directories) rather than editing package-managed defaults.
+- After changing a service configuration, validate it if a check command exists (nginx -t, sshd -t, fail2ban-client -t, visudo -c…) and tell the user how to reload the service instead of restarting it yourself, unless asked.
+- Writing root-owned files requires the connected user to have write permission (e.g. connected as root); if access is denied, explain it to the user.`;
+
 /** Contexte additionnel : consignes du dossier (AGENTS.md…) et projet de la conversation. */
 export interface PromptExtras {
   instructions?: InstructionFile[];
@@ -69,6 +75,7 @@ export function systemPrompt(conv: Conversation, settings: Settings, platform: P
     parts.push(codeSystemPrompt(conv.workspace, platform));
     const instr = instructionsPrompt(extras.instructions ?? []);
     if (instr) parts.push(instr);
+    if (conv.systemAccess) parts.push(SYSTEM_ACCESS_PROMPT);
   }
   if (extras.project) parts.push(projectPrompt(extras.project));
   const user = (conv.systemPrompt ?? settings.systemPrompt)?.trim();
@@ -144,9 +151,14 @@ export function toApiMessages(conv: Conversation, system: string): ApiMessage[] 
   return out;
 }
 
-/** Faut-il demander à l'utilisateur avant d'exécuter cet appel ? */
-export function needsApproval(risk: Risk, name: string, mode: PermissionMode, settings: Settings): boolean {
+/**
+ * Faut-il demander à l'utilisateur avant d'exécuter cet appel ?
+ * `outside` : le chemin sort du dossier de projet (accès système) — écritures toujours approuvées
+ * (sauf mode Autonome), lectures approuvées en mode « Tout demander ».
+ */
+export function needsApproval(risk: Risk, name: string, mode: PermissionMode, settings: Settings, outside = false): boolean {
   if (mode === "auto") return false;
+  if (outside && (risk === "write" || (risk === "read" && mode === "ask"))) return true;
   switch (risk) {
     case "read":
       return false;
@@ -258,11 +270,14 @@ export function toolCardHtml(tc: ToolCallRec, risk: Risk | undefined): string {
     const always =
       risk === "mcp"
         ? `<button class="btn-ghost sm" data-approve="always">Toujours autoriser cet outil</button>`
-        : risk === "write"
+        : risk === "write" && !tc.outside
           ? `<button class="btn-ghost sm" data-approve="always">Accepter toutes les modifications</button>`
           : "";
-    approval = `<div class="tool-approve">
-      <span>${risk === "exec" ? "Exécuter cette commande ?" : risk === "write" ? "Appliquer cette modification ?" : "Autoriser cet appel ?"}</span>
+    const question = tc.outside
+      ? `${risk === "write" ? "Modifier" : "Lire"} <strong>hors du projet</strong> : ${code(tc.outside, 200)} ?`
+      : risk === "exec" ? "Exécuter cette commande ?" : risk === "write" ? "Appliquer cette modification ?" : "Autoriser cet appel ?";
+    approval = `<div class="tool-approve${tc.outside ? " outside" : ""}">
+      <span>${question}</span>
       <span class="row">
         <button class="btn-ghost sm danger" data-approve="deny">Refuser</button>
         ${always}
@@ -272,7 +287,7 @@ export function toolCardHtml(tc: ToolCallRec, risk: Risk | undefined): string {
   }
   const spinner = tc.status === "running" ? '<span class="spinner"></span>' : "";
   return `<div class="tool ${tc.status}" data-tc="${escapeHtml(tc.id)}">
-    <div class="tool-head">${icon}<span class="tool-title">${html}</span>${spinner}<span class="tool-status">${STATUS_LABEL[tc.status]}</span></div>
+    <div class="tool-head">${icon}<span class="tool-title">${html}</span>${tc.outside ? '<span class="badge-outside" title="Fichier en dehors du dossier de projet (accès système)">hors projet</span>' : ""}${spinner}<span class="tool-status">${STATUS_LABEL[tc.status]}</span></div>
     ${diff}${details}${approval}
   </div>`;
 }

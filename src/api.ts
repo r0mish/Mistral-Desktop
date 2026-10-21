@@ -16,6 +16,8 @@ export interface Settings {
   commandTimeout: number;
   mcpAlwaysAllow: string[];
   maxSteps: number;
+  /** Mode d'approbation des nouvelles sessions de code. */
+  defaultPermission: PermissionMode;
   autoContinue: boolean;
   autoCompactPercent: number;
   checkUpdates: boolean;

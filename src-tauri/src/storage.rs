@@ -36,6 +36,8 @@ pub struct Settings {
     pub mcp_always_allow: Vec<String>,
     /// Nombre max d'étapes (appels au modèle) d'un tour de l'agent de code.
     pub max_steps: u32,
+    /// Mode d'approbation des nouvelles sessions de code : "ask", "acceptEdits" ou "auto".
+    pub default_permission: String,
     /// Relance l'agent s'il s'arrête en annonçant une action sans l'exécuter.
     pub auto_continue: bool,
     /// Résume automatiquement l'historique au-delà de ce pourcentage du contexte (0 = jamais).
@@ -122,6 +124,7 @@ impl Default for Settings {
             command_timeout: 120,
             mcp_always_allow: Vec::new(),
             max_steps: 100,
+            default_permission: "auto".into(),
             auto_continue: true,
             auto_compact_percent: 80,
             check_updates: true,
@@ -658,6 +661,8 @@ mod tests {
         migrate_settings(&mut s);
         assert_eq!(s.transcription_model, "voxtral-mini-latest");
         assert!(Settings::default().encrypt_data);
+        // Réglages antérieurs sans mode par défaut : nouvelles sessions de code en Autonome.
+        assert_eq!(s.default_permission, "auto");
     }
 
     #[test]

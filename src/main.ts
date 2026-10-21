@@ -59,7 +59,7 @@ window.addEventListener("keydown", (e) => {
   } else if (e.key === "Escape" && document.querySelector("dialog[open]")) {
     // WebKitGTK ne ferme pas toujours le <dialog> natif avec Échap.
     e.preventDefault();
-    document.querySelector<HTMLDialogElement>("dialog[open]")!.close();
+    [...document.querySelectorAll<HTMLDialogElement>("dialog[open]")].pop()!.close();
   } else if (e.key === "Escape" && cancelDictation()) {
     e.preventDefault();
   } else if (e.key === "Escape" && state.busy) {

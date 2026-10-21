@@ -59,9 +59,13 @@ Un agent façon Claude Code, propulsé par Devstral, travaille dans un dossier d
 ### Serveurs SSH distants
 
 Dans l'onglet **Code** → **Serveur SSH…**, l'agent travaille directement sur un serveur : lecture, recherche (ripgrep ou grep), édition de fichiers, commandes et git s'exécutent à distance.
-- Utilise le **client OpenSSH du système** : alias, `ProxyJump`, clés et options de `~/.ssh/config` s'appliquent comme dans un terminal ; authentification par **agent SSH ou clé** (pas de mot de passe, jamais d'invite bloquante)
+- Utilise le **client OpenSSH du système** : alias, `ProxyJump`, clés et options de `~/.ssh/config` s'appliquent comme dans un terminal
+- **Authentification** au choix :
+  - **clé SSH ou agent** : aucune invite ;
+  - **mot de passe, avec code 2FA** (TOTP, PAM keyboard-interactive) : le mot de passe peut être enregistré dans le **trousseau du système**, jamais sur disque ni en ligne de commande ; les codes à usage unique sont demandés dans une fenêtre de l'application au moment de la connexion. Un mot de passe enregistré mais refusé est redemandé, et « Annuler » interrompt la connexion
+- Les invites passent par l'application elle-même, utilisée comme programme `SSH_ASKPASS`. Elle relaie chaque invite par une connexion locale protégée par un jeton aléatoire, et seul un vrai mot de passe reçoit la valeur enregistrée : une invite de code 2FA ou de phrase secrète la demande toujours à l'utilisateur
 - **Hôte inconnu** : les empreintes SHA256 sont affichées avant toute confiance, puis ajoutées à `~/.ssh/known_hosts` ; une clé d'hôte modifiée est signalée
-- Connexions réutilisées (ControlMaster) sous macOS/Linux pour des outils rapides
+- Connexions réutilisées (ControlMaster) sous macOS/Linux pour des outils rapides : avec un mot de passe, une seule authentification (et un seul code 2FA) pour 10 min de travail. Sous Windows, sans réutilisation, chaque commande s'authentifie : le mot de passe enregistré est envoyé automatiquement, mais un code 2FA serait redemandé à chaque commande
 - Navigation dans les dossiers distants pour choisir le projet ; accès confiné à ce dossier pour les outils de fichiers
 - Arrêt fiable : le groupe de processus distant est tué (TERM puis KILL) quand vous arrêtez une commande
 - Le modèle sait qu'il opère sur un serveur distant (système détecté) et est invité à la prudence (services, configuration, données)
@@ -190,7 +194,13 @@ npm run tauri build    # installateurs dans src-tauri/target/release/bundle/
 
 ```
 src/                    Interface (TypeScript, sans framework)
-  main.ts               État, rendu, boucle d'agent, pièces jointes, réglages
+  main.ts               Démarrage, raccourcis clavier
+  state.ts, ui.ts       État partagé, notifications, thème, modèles
+  sidebar.ts            Barre latérale : conversations, recherche, projets
+  chrome.ts, thread.ts  Barre du haut et compositeur, fil des messages
+  run.ts                Envoi et boucle d'agent : streaming, outils, approbations, contexte
+  attachments.ts        Pièces jointes (images, PDF, texte)
+  settings-ui.ts        Réglages ; updates-ui.ts : mises à jour
   agent.ts              Invites système, conversion API, politique d'approbation, cartes d'outils
   markdown.ts           marked + highlight.js + DOMPurify
   api.ts                Appels IPC typés vers Rust
@@ -210,8 +220,21 @@ src-tauri/src/
   knowledge.rs          Fichiers de référence des projets : en entier ou extraits pertinents
   audio.rs              Capture du micro (cpal), rééchantillonnage 16 kHz, WAV en mémoire
   target.rs, ssh.rs     Dossier de projet local ou distant (OpenSSH), fichiers de consignes
+  askpass.rs            Mots de passe et codes 2FA SSH (SSH_ASKPASS relayé, trousseau)
   git.rs, shell.rs      Git, choix du shell (bash, Git Bash, PowerShell)
+e2e/                    Tests de bout en bout : l'application réelle pilotée par tauri-driver
+                        (WebDriver) contre un faux serveur Mistral et de vrais sshd
 ```
+
+### Tests
+
+```bash
+cd src-tauri && cargo test                               # tests unitaires Rust
+npx tauri build --debug --no-bundle                      # Linux : app de test
+xvfb-run -a npm run test:e2e                             # tests de bout en bout (tauri-driver, WebKitWebDriver)
+```
+
+Les scénarios SSH par mot de passe et 2FA (`e2e/ssh.test.mjs`) s'exécutent dans le CI contre des sshd locaux créés par `e2e/ssh-servers.sh` (machine jetable uniquement : ce script crée un compte et lance des serveurs SSH).
 
 Tauri 2 utilise la WebView native de l'OS (WebKit, WebView2) : binaire d'environ 10-15 Mo, contre ~150 Mo pour une app Electron.
 

@@ -1,3 +1,4 @@
+mod askpass;
 mod audio;
 mod git;
 mod mcp;
@@ -401,7 +402,11 @@ async fn dictation_stop(app: AppHandle, dictation: State<'_, Dictation>, transcr
 
 #[tauri::command]
 fn ssh_hosts(app: AppHandle) -> Vec<ssh::SshHost> {
-    storage::load_ssh_hosts(&app)
+    let mut hosts = storage::load_ssh_hosts(&app);
+    for h in hosts.iter_mut().filter(|h| h.uses_password()) {
+        h.has_password = askpass::has_password(&h.id);
+    }
+    hosts
 }
 
 #[tauri::command]
@@ -410,6 +415,7 @@ fn ssh_save_host(app: AppHandle, mut host: ssh::SshHost) -> CmdResult<ssh::SshHo
     host.label = if host.label.trim().is_empty() { host.host.clone() } else { host.label.trim().to_string() };
     host.user = host.user.filter(|u| !u.trim().is_empty());
     host.identity_file = host.identity_file.filter(|k| !k.trim().is_empty());
+    host.has_password = false;
     ssh::validate(&host)?;
     let mut hosts = storage::load_ssh_hosts(&app);
     if host.id.is_empty() {
@@ -427,6 +433,7 @@ fn ssh_delete_host(app: AppHandle, id: String) -> CmdResult<()> {
     let mut hosts = storage::load_ssh_hosts(&app);
     hosts.retain(|h| h.id != id);
     storage::save_ssh_hosts(&app, &hosts)?;
+    let _ = askpass::forget_password(&id);
     // Les dossiers distants de cet hôte ne sont plus autorisés.
     for ws in storage::load_workspaces(&app) {
         if target::parse_remote(&ws).is_some_and(|(hid, _)| hid == id) {
@@ -437,7 +444,8 @@ fn ssh_delete_host(app: AppHandle, id: String) -> CmdResult<()> {
 }
 
 #[tauri::command]
-async fn ssh_test(app: AppHandle, host: ssh::SshHost) -> CmdResult<ssh::TestResult> {
+async fn ssh_test(app: AppHandle, mut host: ssh::SshHost, password: Option<String>) -> CmdResult<ssh::TestResult> {
+    host.secret = password.filter(|p| !p.is_empty());
     let res = ssh::test(&host).await;
     // Mémorise le système détecté pour informer le modèle.
     if res.ok && !host.id.is_empty() {
@@ -451,8 +459,25 @@ async fn ssh_test(app: AppHandle, host: ssh::SshHost) -> CmdResult<ssh::TestResu
 }
 
 #[tauri::command]
-async fn ssh_trust(host: ssh::SshHost) -> CmdResult<()> {
+async fn ssh_trust(mut host: ssh::SshHost, password: Option<String>) -> CmdResult<()> {
+    // Rebond ou ssh-keyscan impossible : la clé est enregistrée par une connexion, qui s'authentifie.
+    host.secret = password.filter(|p| !p.is_empty());
     ssh::trust(&host).await
+}
+
+/// Mot de passe SSH dans le trousseau du système (`None` : l'oublier).
+#[tauri::command]
+fn ssh_set_password(host_id: String, password: Option<String>) -> CmdResult<()> {
+    match password.filter(|p| !p.is_empty()) {
+        Some(p) => askpass::save_password(&host_id, &p),
+        None => askpass::forget_password(&host_id),
+    }
+}
+
+/// Réponse de l'utilisateur à une invite SSH (mot de passe, code 2FA) ; `None` : annulée.
+#[tauri::command]
+fn ssh_prompt_answer(id: String, answer: Option<String>, save: bool) {
+    askpass::respond(&id, answer.map(|text| askpass::Answer { text, save }));
 }
 
 fn find_host(app: &AppHandle, id: &str) -> CmdResult<ssh::SshHost> {
@@ -684,6 +709,11 @@ async fn install_update(app: AppHandle, on_progress: Channel<serde_json::Value>)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Mode askpass : l'exécutable relaie une invite SSH à l'application (voir `askpass`).
+pub fn askpass_main() -> Option<i32> {
+    askpass::client_main()
+}
+
 pub fn run() {
     #[cfg(unix)]
     mcp::fix_path_env();
@@ -708,6 +738,7 @@ pub fn run() {
                     Err(e) => *vault::LAST_ERROR.lock().unwrap() = Some(e),
                 }
             }
+            askpass::start(app.handle().clone());
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mgr = handle.state::<Arc<McpManager>>().inner().clone();
@@ -763,6 +794,8 @@ pub fn run() {
             ssh_trust,
             ssh_list_dirs,
             ssh_open_workspace,
+            ssh_set_password,
+            ssh_prompt_answer,
             git_status,
             git_diff,
             git_stage,

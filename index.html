@@ -392,8 +392,19 @@
               <label>Utilisateur <input id="ssh-user" placeholder="par défaut : config SSH" spellcheck="false" /></label>
               <label>Port <input id="ssh-port" type="number" min="1" max="65535" placeholder="22" /></label>
             </div>
-            <label>Clé privée (facultatif) <input id="ssh-key" placeholder="~/.ssh/id_ed25519 — sinon agent SSH" spellcheck="false" /></label>
-            <p class="muted small">Utilise le client OpenSSH du système : vos alias, <code>ProxyJump</code> et clés de <code>~/.ssh/config</code> s'appliquent. Authentification par clé ou agent SSH uniquement (pas de mot de passe).</p>
+            <label>Authentification
+              <select id="ssh-auth">
+                <option value="key">Clé SSH ou agent</option>
+                <option value="password">Mot de passe (et code 2FA)</option>
+              </select>
+            </label>
+            <label data-auth="key">Clé privée (facultatif) <input id="ssh-key" placeholder="~/.ssh/id_ed25519 — sinon agent SSH" spellcheck="false" /></label>
+            <div data-auth="password" hidden>
+              <label>Mot de passe <input id="ssh-password" type="password" autocomplete="off" placeholder="vide : demandé à chaque connexion" /></label>
+              <label class="check"><input id="ssh-save-password" type="checkbox" checked /> Enregistrer dans le trousseau du système</label>
+              <p class="muted small" id="ssh-password-status"></p>
+            </div>
+            <p class="muted small">Utilise le client OpenSSH du système : vos alias, <code>ProxyJump</code> et clés de <code>~/.ssh/config</code> s'appliquent. Par mot de passe, les codes 2FA sont demandés à la connexion, puis la connexion est réutilisée 10 min (sauf sous Windows, où chaque commande s'authentifie).</p>
             <div class="row end">
               <button type="button" class="btn-ghost sm danger" id="ssh-delete" hidden>Supprimer</button>
               <button type="submit" class="btn-primary sm" id="ssh-test">Se connecter</button>
@@ -412,6 +423,23 @@
           </div>
         </section>
       </div>
+    </dialog>
+
+    <dialog id="ssh-prompt">
+      <form id="ssh-prompt-form" autocomplete="off">
+        <div class="settings-head">
+          <h2 id="ssh-prompt-title">Connexion SSH</h2>
+        </div>
+        <fieldset>
+          <p class="ssh-msg error" id="ssh-prompt-retry" hidden>Mot de passe refusé, réessayez.</p>
+          <label><span id="ssh-prompt-text"></span> <input id="ssh-prompt-input" type="password" autocomplete="off" spellcheck="false" /></label>
+          <label class="check" id="ssh-prompt-save-row"><input id="ssh-prompt-save" type="checkbox" /> Enregistrer dans le trousseau du système</label>
+        </fieldset>
+        <div class="dialog-actions">
+          <button type="button" class="btn-ghost" id="ssh-prompt-cancel">Annuler</button>
+          <button type="submit" class="btn-primary">Valider</button>
+        </div>
+      </form>
     </dialog>
 
     <dialog id="project-dialog">

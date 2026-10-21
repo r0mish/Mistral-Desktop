@@ -1,5 +1,6 @@
 // Gestion des serveurs SSH : création, test, confiance, choix d'un dossier distant.
-import { api, type SshHost } from "./api";
+import { listen } from "@tauri-apps/api/event";
+import { api, type SshHost, type SshPrompt } from "./api";
 import { escapeHtml } from "./markdown";
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
@@ -19,7 +20,12 @@ const f = {
   user: () => $<HTMLInputElement>("#ssh-user"),
   port: () => $<HTMLInputElement>("#ssh-port"),
   key: () => $<HTMLInputElement>("#ssh-key"),
+  auth: () => $<HTMLSelectElement>("#ssh-auth"),
+  password: () => $<HTMLInputElement>("#ssh-password"),
+  savePassword: () => $<HTMLInputElement>("#ssh-save-password"),
 };
+
+const usesPassword = () => f.auth().value === "password";
 
 const errMsg = (e: unknown) => (typeof e === "string" ? e : e instanceof Error ? e.message : JSON.stringify(e));
 
@@ -58,8 +64,9 @@ function formHost(): SshHost {
     host: f.host().value.trim(),
     user: f.user().value.trim() || null,
     port: port > 0 ? port : null,
-    identityFile: f.key().value.trim() || null,
+    identityFile: usesPassword() ? null : f.key().value.trim() || null,
     system: current?.system ?? null,
+    auth: usesPassword() ? "password" : null,
   };
 }
 
@@ -81,10 +88,29 @@ function select(h: SshHost | null) {
   f.user().value = h?.user ?? "";
   f.port().value = h?.port ? String(h.port) : "";
   f.key().value = h?.identityFile ?? "";
+  f.auth().value = h?.auth === "password" ? "password" : "key";
+  f.password().value = "";
+  f.savePassword().checked = true;
+  $("#ssh-password-status").textContent = h?.hasPassword ? "✓ Mot de passe enregistré : laissez le champ vide pour le conserver." : "";
+  renderAuth();
   $("#ssh-delete").hidden = !h;
   $("#ssh-result").innerHTML = "";
   $("#ssh-browser").hidden = true;
   renderList();
+}
+
+function renderAuth() {
+  document.querySelectorAll<HTMLElement>("#ssh-form [data-auth]").forEach((e) => (e.hidden = e.dataset.auth !== f.auth().value));
+}
+
+/** Après une connexion réussie : mot de passe enregistré, conservé ou oublié selon le formulaire. */
+async function storePassword(saved: SshHost, typed: string) {
+  if (saved.auth !== "password") {
+    if (current?.hasPassword) await api.sshSetPassword(saved.id, null);
+    return;
+  }
+  if (!f.savePassword().checked) await api.sshSetPassword(saved.id, null);
+  else if (typed) await api.sshSetPassword(saved.id, typed);
 }
 
 function showResult(html: string, kind: "ok" | "error" | "warn" | "info") {
@@ -97,7 +123,8 @@ async function connect() {
   showResult('<span class="spinner"></span> Connexion…', "info");
   $("#ssh-browser").hidden = true;
   try {
-    const res = await api.sshTest(host);
+    const typed = usesPassword() ? f.password().value : "";
+    const res = await api.sshTest(host, typed);
     if (res.needsTrust) {
       const fps = res.fingerprints.length
         ? `<ul class="fps">${res.fingerprints.map((x) => `<li><code>${escapeHtml(x)}</code></li>`).join("")}</ul>`
@@ -109,7 +136,7 @@ async function connect() {
       );
       $("#ssh-trust").addEventListener("click", async () => {
         try {
-          await api.sshTrust(host);
+          await api.sshTrust(host, typed);
           await connect();
         } catch (e) {
           showResult(escapeHtml(errMsg(e)), "error");
@@ -120,8 +147,10 @@ async function connect() {
     if (!res.ok) return showResult(escapeHtml(res.error ?? "Échec de la connexion"), "error");
     // Connexion réussie : on enregistre le serveur (avec le système détecté).
     const saved = await api.sshSaveHost({ ...host, system: res.system });
-    current = saved;
+    await storePassword(saved, typed).catch((e) => notify(`Mot de passe non enregistré : ${errMsg(e)}`, true));
+    f.password().value = "";
     await loadHosts();
+    current = hosts.find((h) => h.id === saved.id) ?? saved;
     renderList();
     $("#ssh-title").textContent = saved.label;
     $("#ssh-delete").hidden = false;
@@ -167,6 +196,8 @@ export function initSshUi(opts: { onOpen: (ws: string) => void; toast: (msg: str
   onOpen = opts.onOpen;
   notify = opts.toast;
   $("#ssh-close").addEventListener("click", () => dlg().close());
+  f.auth().addEventListener("change", renderAuth);
+  initPrompts();
   dlg().addEventListener("close", () => (onPick = null));
   $("#ssh-new").addEventListener("click", () => select(null));
   $("#ssh-host-list").addEventListener("click", (e) => {
@@ -222,4 +253,57 @@ export function initSshUi(opts: { onOpen: (ws: string) => void; toast: (msg: str
     }
   });
   loadHosts();
+}
+
+// ---------------------------------------------------------------- invites (mot de passe, code 2FA)
+
+const prompts: SshPrompt[] = [];
+let shown: SshPrompt | null = null;
+const promptDlg = () => $<HTMLDialogElement>("#ssh-prompt");
+
+/** Affiche l'invite suivante, une à la fois. */
+function nextPrompt() {
+  if (shown || !prompts.length) return;
+  shown = prompts.shift()!;
+  $("#ssh-prompt-title").textContent = `Connexion SSH : ${shown.host}`;
+  $("#ssh-prompt-text").textContent = shown.prompt || "Mot de passe :";
+  $("#ssh-prompt-retry").hidden = !shown.retry;
+  $("#ssh-prompt-save-row").hidden = !shown.password || !shown.hostId;
+  $<HTMLInputElement>("#ssh-prompt-save").checked = false;
+  const input = $<HTMLInputElement>("#ssh-prompt-input");
+  input.value = "";
+  promptDlg().showModal();
+  input.focus();
+}
+
+function answerPrompt(answer: string | null) {
+  const p = shown;
+  if (!p) return;
+  shown = null;
+  const save = answer !== null && $<HTMLInputElement>("#ssh-prompt-save").checked;
+  $<HTMLInputElement>("#ssh-prompt-input").value = "";
+  api.sshPromptAnswer(p.id, answer, save).catch(() => {});
+  if (promptDlg().open) promptDlg().close();
+  // Mot de passe enregistré : l'indication du formulaire SSH est mise à jour (sans le réinitialiser).
+  if (save) {
+    loadHosts().then(() => {
+      if (current?.id !== p.hostId) return;
+      current = hosts.find((h) => h.id === p.hostId) ?? current;
+      $("#ssh-password-status").textContent = "✓ Mot de passe enregistré : laissez le champ vide pour le conserver.";
+    });
+  }
+  setTimeout(nextPrompt, 50);
+}
+
+function initPrompts() {
+  listen<SshPrompt>("ssh-prompt", (e) => {
+    prompts.push(e.payload);
+    nextPrompt();
+  });
+  $("#ssh-prompt-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    answerPrompt($<HTMLInputElement>("#ssh-prompt-input").value);
+  });
+  $("#ssh-prompt-cancel").addEventListener("click", () => answerPrompt(null));
+  promptDlg().addEventListener("close", () => answerPrompt(null));
 }

@@ -6,8 +6,10 @@ import { openSshDialog, workspaceLabel } from "./ssh-ui";
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
 /** Même limite que le stockage (storage::MAX_PROJECT_CHARS). */
-const MAX_CHARS = 600_000;
-const MAX_TEXT_FILE = 2 * 1024 * 1024;
+const MAX_CHARS = 10_000_000;
+/** Au-delà, seuls des extraits pertinents sont envoyés (knowledge::FULL_CONTEXT_CHARS). */
+const FULL_CHARS = 60_000;
+const MAX_TEXT_FILE = 20 * 1024 * 1024;
 const MAX_PDF = 50 * 1024 * 1024;
 
 let projects: Project[] = [];
@@ -42,7 +44,12 @@ function renderFiles() {
     : '<p class="muted small">Aucun fichier.</p>';
   const chars = $<HTMLTextAreaElement>("#p-instructions").value.length + files.reduce((n, f) => n + f.text.length, 0);
   const over = chars > MAX_CHARS;
-  $("#p-size").textContent = `≈ ${Math.round(chars / 3.5).toLocaleString("fr-FR")} tokens ajoutés à chaque message${over ? " — trop volumineux" : ""}`;
+  const fileChars = files.reduce((n, f) => n + f.text.length, 0);
+  $("#p-size").textContent = over
+    ? `Trop volumineux (max ${MAX_CHARS / 1_000_000} M caractères)`
+    : fileChars > FULL_CHARS
+      ? `${fmtSize(fileChars)} : recherche locale, seuls les extraits pertinents sont envoyés (≈ 4 k tokens par message)`
+      : `≈ ${Math.round(chars / 3.5).toLocaleString("fr-FR")} tokens ajoutés à chaque message`;
   $("#p-size").classList.toggle("error", over);
 }
 

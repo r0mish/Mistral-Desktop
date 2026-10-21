@@ -50,6 +50,38 @@ pub struct Settings {
     pub transcription_model: String,
     pub transcription_language: String,
     pub transcription_url: String,
+    /// Termes à favoriser par la transcription (un par ligne ou séparés par des virgules).
+    pub transcription_vocabulary: String,
+    /// Chiffrement des conversations, projets et mcp.json (clé dans le trousseau du système).
+    pub encrypt_data: bool,
+    /// Version du format des réglages, pour les migrations (absent = 0).
+    #[serde(default)]
+    pub settings_version: u32,
+}
+
+/// Version courante du format des réglages.
+const SETTINGS_VERSION: u32 = 1;
+
+/// Mises à niveau des réglages d'anciennes versions.
+fn migrate_settings(s: &mut Settings) {
+    if s.settings_version < 1 {
+        // 0.7 : Voxtral 3 remplace l'ancien modèle par défaut.
+        if s.transcription_model == crate::mistral::TRANSCRIBE_FALLBACK {
+            s.transcription_model = crate::mistral::TRANSCRIBE_MODEL.into();
+        }
+    }
+    s.settings_version = SETTINGS_VERSION;
+}
+
+impl Settings {
+    pub fn vocabulary(&self) -> Vec<String> {
+        self.transcription_vocabulary
+            .split([',', '\n', ';'])
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .take(100)
+            .collect()
+    }
 }
 
 /// Tarifs indicatifs (sources tierces, octobre 2026) : modifiables dans les réglages.
@@ -96,9 +128,12 @@ impl Default for Settings {
             skipped_version: String::new(),
             shell: "auto".into(),
             prices: default_prices(),
-            transcription_model: "voxtral-mini-latest".into(),
+            transcription_model: crate::mistral::TRANSCRIBE_MODEL.into(),
             transcription_language: "fr".into(),
             transcription_url: String::new(),
+            transcription_vocabulary: String::new(),
+            encrypt_data: true,
+            settings_version: SETTINGS_VERSION,
         }
     }
 }
@@ -194,6 +229,64 @@ fn write_json<T: Serialize>(path: &Path, v: &T) -> R<()> {
     write_atomic(path, &serde_json::to_vec_pretty(v).map_err(|e| e.to_string())?)
 }
 
+/// Données personnelles : chiffrées sur disque si le chiffrement est actif.
+fn write_secret(path: &Path, plain: &[u8]) -> R<()> {
+    write_atomic(path, &crate::vault::encode(plain)?)
+}
+
+fn write_secret_json<T: Serialize>(path: &Path, v: &T) -> R<()> {
+    write_secret(path, &serde_json::to_vec_pretty(v).map_err(|e| e.to_string())?)
+}
+
+fn read_secret(path: &Path) -> R<Vec<u8>> {
+    crate::vault::decode(fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?)
+}
+
+/// Fichiers contenant des données personnelles.
+fn secret_files(app: &AppHandle) -> R<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for dir in [conv_dir(app)?, projects_dir(app)?] {
+        for e in fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+            if e.path().extension().and_then(|x| x.to_str()) == Some("json") {
+                out.push(e.path());
+            }
+        }
+    }
+    let mcp = mcp_path(app)?;
+    if mcp.exists() {
+        out.push(mcp);
+    }
+    Ok(out)
+}
+
+/// Existe-t-il des fichiers déjà chiffrés ?
+pub fn has_sealed_files(app: &AppHandle) -> R<bool> {
+    for p in secret_files(app)? {
+        let mut head = [0u8; 8];
+        let n = fs::File::open(&p).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
+        if crate::vault::is_sealed(&head[..n]) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// (Dé)chiffre les fichiers existants selon l'état du chiffrement. Renvoie le nombre de fichiers convertis.
+pub fn reseal_all(app: &AppHandle) -> R<usize> {
+    let want = crate::vault::enabled();
+    let mut n = 0;
+    for p in secret_files(app)? {
+        let raw = fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+        if crate::vault::is_sealed(&raw) == want {
+            continue;
+        }
+        let plain = crate::vault::decode(raw)?;
+        write_secret(&p, &plain)?;
+        n += 1;
+    }
+    Ok(n)
+}
+
 /// Les identifiants servent de nom de fichier : on refuse tout ce qui n'est pas [A-Za-z0-9-].
 fn check_id(id: &str) -> R<()> {
     if !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
@@ -206,7 +299,11 @@ fn check_id(id: &str) -> R<()> {
 pub fn load_settings(app: &AppHandle) -> R<Settings> {
     let path = settings_path(app)?;
     match fs::read(&path) {
-        Ok(bytes) => Ok(serde_json::from_slice(&bytes).unwrap_or_default()),
+        Ok(bytes) => {
+            let mut s: Settings = serde_json::from_slice(&bytes).unwrap_or_default();
+            migrate_settings(&mut s);
+            Ok(s)
+        }
         Err(_) => Ok(Settings::default()),
     }
 }
@@ -227,18 +324,26 @@ fn rebuild_index(app: &AppHandle) -> R<Vec<ConversationSummary>> {
         if p.extension().and_then(|e| e.to_str()) != Some("json") || p.ends_with("index.json") {
             continue;
         }
-        if let Ok(c) = fs::read(&p).map_err(|_| ()).and_then(|b| serde_json::from_slice::<Conversation>(&b).map_err(|_| ())) {
+        // Fichier chiffré illisible (clé absente) : on s'arrête sans réécrire l'index,
+        // sinon les conversations disparaîtraient de la liste une fois la clé restaurée.
+        let bytes = read_secret(&p)?;
+        if let Ok(c) = serde_json::from_slice::<Conversation>(&bytes) {
             out.push(ConversationSummary::from(&c));
         }
     }
-    write_json(&index_path(app)?, &out)?;
+    write_secret_json(&index_path(app)?, &out)?;
     Ok(out)
 }
 
 fn read_index(app: &AppHandle) -> R<Vec<ConversationSummary>> {
-    match fs::read(index_path(app)?).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
-        Some(idx) => Ok(idx),
-        None => rebuild_index(app),
+    let path = index_path(app)?;
+    match fs::read(&path) {
+        // Index absent : reconstruction. Index chiffré illisible : erreur (jamais de réécriture).
+        Err(_) => rebuild_index(app),
+        Ok(raw) => match serde_json::from_slice(&crate::vault::decode(raw)?) {
+            Ok(idx) => Ok(idx),
+            Err(_) => rebuild_index(app),
+        },
     }
 }
 
@@ -250,17 +355,50 @@ pub fn list_conversations(app: &AppHandle) -> R<Vec<ConversationSummary>> {
 
 pub fn load_conversation(app: &AppHandle, id: &str) -> R<Conversation> {
     check_id(id)?;
-    let bytes = fs::read(conv_dir(app)?.join(format!("{id}.json"))).map_err(|e| e.to_string())?;
+    let bytes = read_secret(&conv_dir(app)?.join(format!("{id}.json")))?;
     serde_json::from_slice(&bytes).map_err(|e| e.to_string())
 }
 
 pub fn save_conversation(app: &AppHandle, c: &Conversation) -> R<()> {
     check_id(&c.id)?;
-    write_json(&conv_dir(app)?.join(format!("{}.json", c.id)), c)?;
+    write_secret_json(&conv_dir(app)?.join(format!("{}.json", c.id)), c)?;
     let mut idx = read_index(app)?;
     idx.retain(|s| s.id != c.id);
     idx.push(c.into());
-    write_json(&index_path(app)?, &idx)
+    write_secret_json(&index_path(app)?, &idx)
+}
+
+#[derive(Serialize)]
+pub struct SearchHit {
+    pub id: String,
+    /// Extrait du message trouvé (absent si seul le titre correspond).
+    pub snippet: Option<String>,
+}
+
+/// Recherche plein texte dans toutes les conversations (titres et messages), déchiffrées en mémoire uniquement.
+pub fn search_conversations(app: &AppHandle, query: &str) -> R<Vec<SearchHit>> {
+    use crate::textsearch::{fold, snippet};
+    let q: Vec<char> = fold(query.trim());
+    if q.len() < 2 {
+        return Ok(Vec::new());
+    }
+    let contains = |s: &str| fold(s).windows(q.len()).any(|w| w == q.as_slice());
+    let mut hits = Vec::new();
+    for e in fs::read_dir(conv_dir(app)?).map_err(|e| e.to_string())?.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) != Some("json") || p.ends_with("index.json") {
+            continue;
+        }
+        let Some(c) = read_secret(&p).ok().and_then(|b| serde_json::from_slice::<Conversation>(&b).ok()) else { continue };
+        let found = c.messages.iter().find_map(|m| snippet(&m.content, query, 60));
+        if found.is_some() || contains(&c.title) {
+            hits.push(SearchHit { id: c.id, snippet: found });
+        }
+        if hits.len() >= 200 {
+            break;
+        }
+    }
+    Ok(hits)
 }
 
 pub fn delete_conversation(app: &AppHandle, id: &str) -> R<()> {
@@ -271,7 +409,7 @@ pub fn delete_conversation(app: &AppHandle, id: &str) -> R<()> {
     }
     let mut idx = read_index(app)?;
     idx.retain(|s| s.id != id);
-    write_json(&index_path(app)?, &idx)
+    write_secret_json(&index_path(app)?, &idx)
 }
 
 fn workspaces_path(app: &AppHandle) -> R<PathBuf> {
@@ -363,7 +501,8 @@ pub struct ProjectFile {
 }
 
 /// Taille maximale du texte d'un projet (consignes + fichiers), injecté dans chaque requête.
-pub const MAX_PROJECT_CHARS: usize = 600_000;
+/// Au-delà de knowledge::FULL_CONTEXT_CHARS, seuls des extraits pertinents sont envoyés au modèle.
+pub const MAX_PROJECT_CHARS: usize = 10_000_000;
 
 fn projects_dir(app: &AppHandle) -> R<PathBuf> {
     ensure_dir(data_dir(app)?.join("projects"))
@@ -374,10 +513,16 @@ pub fn list_projects(app: &AppHandle) -> R<Vec<Project>> {
         .map_err(|e| e.to_string())?
         .flatten()
         .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
-        .filter_map(|e| fs::read(e.path()).ok().and_then(|b| serde_json::from_slice(&b).ok()))
+        .filter_map(|e| read_secret(&e.path()).ok().and_then(|b| serde_json::from_slice(&b).ok()))
         .collect();
     out.sort_by_key(|p: &Project| p.name.to_lowercase());
     Ok(out)
+}
+
+pub fn load_project(app: &AppHandle, id: &str) -> R<Project> {
+    check_id(id)?;
+    let b = read_secret(&projects_dir(app)?.join(format!("{id}.json")))?;
+    serde_json::from_slice(&b).map_err(|e| e.to_string())
 }
 
 pub fn save_project(app: &AppHandle, p: &Project) -> R<()> {
@@ -389,7 +534,7 @@ pub fn save_project(app: &AppHandle, p: &Project) -> R<()> {
     if size > MAX_PROJECT_CHARS {
         return Err(format!("Projet trop volumineux ({size} caractères, max {MAX_PROJECT_CHARS})"));
     }
-    write_json(&projects_dir(app)?.join(format!("{}.json", p.id)), p)
+    write_secret_json(&projects_dir(app)?.join(format!("{}.json", p.id)), p)
 }
 
 pub fn delete_project(app: &AppHandle, id: &str) -> R<()> {
@@ -424,12 +569,13 @@ fn mcp_path(app: &AppHandle) -> R<PathBuf> {
 pub fn load_mcp_config(app: &AppHandle) -> String {
     mcp_path(app)
         .ok()
-        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|p| read_secret(&p).ok())
+        .and_then(|b| String::from_utf8(b).ok())
         .unwrap_or_else(|| "{\n  \"mcpServers\": {}\n}\n".into())
 }
 
 pub fn save_mcp_config(app: &AppHandle, text: &str) -> R<()> {
-    write_atomic(&mcp_path(app)?, text.as_bytes())
+    write_secret(&mcp_path(app)?, text.as_bytes())
 }
 
 fn to_markdown(c: &Conversation) -> String {
@@ -499,6 +645,20 @@ pub async fn export_conversation(app: &AppHandle, id: &str) -> R<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_settings_are_migrated() {
+        let mut s: Settings = serde_json::from_str(r#"{"transcriptionModel":"voxtral-mini-latest","transcriptionVocabulary":"Proxmox, fail2ban\nZFS"}"#).unwrap();
+        assert_eq!(s.settings_version, 0);
+        migrate_settings(&mut s);
+        assert_eq!(s.transcription_model, crate::mistral::TRANSCRIBE_MODEL);
+        assert_eq!(s.vocabulary(), ["Proxmox", "fail2ban", "ZFS"]);
+        // Choix explicite conservé une fois migré.
+        s.transcription_model = "voxtral-mini-latest".into();
+        migrate_settings(&mut s);
+        assert_eq!(s.transcription_model, "voxtral-mini-latest");
+        assert!(Settings::default().encrypt_data);
+    }
 
     #[test]
     fn ids_cannot_escape_directory() {

@@ -49,6 +49,8 @@ const SYSTEM_ACCESS_PROMPT = `System access is enabled for this session: list_fi
 export interface PromptExtras {
   instructions?: InstructionFile[];
   project?: Project | null;
+  /** Fichiers de référence préparés (extraits pertinents pour les gros projets). */
+  projectFiles?: string;
 }
 
 export function instructionsPrompt(files: InstructionFile[]): string {
@@ -57,13 +59,17 @@ export function instructionsPrompt(files: InstructionFile[]): string {
   return `Project instructions, loaded automatically from the project root. Follow them: they take precedence over your defaults (but not over the user's explicit requests). Sub-directories may contain their own AGENTS.md: read it before working there.\n\n${body}`;
 }
 
-export function projectPrompt(p: Project): string {
+/**
+ * `files` : contenu des fichiers de référence préparé côté Rust (en entier, ou extraits pertinents
+ * pour les gros projets). À défaut, les fichiers sont joints en entier.
+ */
+export function projectPrompt(p: Project, files?: string): string {
   const parts = [`Cette conversation fait partie du projet « ${p.name} ».`];
   if (p.instructions.trim()) parts.push(`Consignes du projet :\n${p.instructions.trim()}`);
   if (p.files.length) {
     parts.push(
       "Fichiers de référence du projet (base de connaissances : appuie-toi dessus et cite le nom du fichier quand tu t'en sers) :\n\n" +
-        p.files.map((f) => `<fichier nom="${f.name}">\n${f.text}\n</fichier>`).join("\n\n"),
+        (files ?? p.files.map((f) => `<fichier nom="${f.name}">\n${f.text}\n</fichier>`).join("\n\n")),
     );
   }
   return parts.join("\n\n");
@@ -77,7 +83,7 @@ export function systemPrompt(conv: Conversation, settings: Settings, platform: P
     if (instr) parts.push(instr);
     if (conv.systemAccess) parts.push(SYSTEM_ACCESS_PROMPT);
   }
-  if (extras.project) parts.push(projectPrompt(extras.project));
+  if (extras.project) parts.push(projectPrompt(extras.project, extras.projectFiles));
   const user = (conv.systemPrompt ?? settings.systemPrompt)?.trim();
   if (user) parts.push(user);
   if (conv.webSearch) parts.push(WEB_PROMPT());

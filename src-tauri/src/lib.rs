@@ -5,9 +5,12 @@ mod mistral;
 mod shell;
 mod ssh;
 mod storage;
+mod knowledge;
 mod target;
+mod textsearch;
 mod tools;
 mod updates;
+mod vault;
 mod web;
 mod workspace;
 
@@ -108,7 +111,51 @@ fn save_settings(app: AppHandle, settings: Settings) -> CmdResult<()> {
     if !settings.transcription_url.trim().is_empty() {
         mistral::validate_base_url(settings.transcription_url.trim())?;
     }
+    if settings.encrypt_data != vault::enabled() {
+        let res = if settings.encrypt_data {
+            enable_encryption(&app).map(|_| ())
+        } else {
+            vault::set_enabled(false).and_then(|_| storage::reseal_all(&app).map(|_| ()))
+        };
+        match res {
+            Ok(()) => *vault::LAST_ERROR.lock().unwrap() = None,
+            // Trousseau indisponible : les réglages sont enregistrés, l'erreur est affichée.
+            Err(e) => *vault::LAST_ERROR.lock().unwrap() = Some(e),
+        }
+    }
     storage::save_settings(&app, &settings)
+}
+
+/// Active le chiffrement puis chiffre les fichiers existants. Ne crée jamais de nouvelle clé
+/// si des données sont déjà chiffrées avec une autre (trousseau perdu) : elles deviendraient irrécupérables.
+fn enable_encryption(app: &AppHandle) -> CmdResult<usize> {
+    if vault::key(false)?.is_none() && storage::has_sealed_files(app)? {
+        return Err("Des données chiffrées existent, mais leur clé est absente du trousseau : restaurez votre clé de récupération (Réglages → Général).".into());
+    }
+    vault::set_enabled(true)?;
+    storage::reseal_all(app)
+}
+
+#[tauri::command]
+fn vault_status() -> vault::Status {
+    vault::status()
+}
+
+#[tauri::command]
+fn vault_export_key() -> CmdResult<String> {
+    vault::export_key()
+}
+
+/// Restaure une clé de récupération puis vérifie qu'elle ouvre bien les données existantes.
+#[tauri::command]
+fn vault_import_key(app: AppHandle, key: String) -> CmdResult<()> {
+    vault::import_key(&key)?;
+    storage::list_conversations(&app)?;
+    if storage::load_settings(&app)?.encrypt_data {
+        enable_encryption(&app)?;
+        *vault::LAST_ERROR.lock().unwrap() = None;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -130,6 +177,13 @@ fn load_conversation(app: AppHandle, id: String) -> CmdResult<Conversation> {
 #[tauri::command]
 fn save_conversation(app: AppHandle, conversation: Conversation) -> CmdResult<()> {
     storage::save_conversation(&app, &conversation)
+}
+
+#[tauri::command]
+async fn search_conversations(app: AppHandle, query: String) -> CmdResult<Vec<storage::SearchHit>> {
+    tauri::async_runtime::spawn_blocking(move || storage::search_conversations(&app, &query))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -203,9 +257,10 @@ async fn run_tool(
     let settings = storage::load_settings(&app)?;
     let approved = storage::load_workspaces(&app);
     let hosts = storage::load_ssh_hosts(&app);
+    let project = ctx.project.as_deref().and_then(|id| storage::load_project(&app, id).ok());
     let cancel = Arc::new(Notify::new());
     streams.0.lock().unwrap().insert(request_id.clone(), cancel.clone());
-    let env = tools::RunEnv { settings: &settings, api_key: api_key(), approved: &approved, hosts: &hosts, mcp: &mcp, cancel: cancel.clone() };
+    let env = tools::RunEnv { settings: &settings, api_key: api_key(), approved: &approved, hosts: &hosts, mcp: &mcp, cancel: cancel.clone(), project };
     let out = if name == "run_command" {
         // La commande gère elle-même l'annulation (arrêt du groupe de processus).
         tools::run(&ctx, env, &name, &arguments).await
@@ -271,6 +326,14 @@ fn save_project(app: AppHandle, project: storage::Project) -> CmdResult<()> {
     storage::save_project(&app, &project)
 }
 
+/// Fichiers de référence à joindre pour une question : en entier, ou extraits pertinents (gros projets).
+#[tauri::command]
+async fn project_context(app: AppHandle, id: String, query: String) -> CmdResult<knowledge::ProjectContext> {
+    tauri::async_runtime::spawn_blocking(move || storage::load_project(&app, &id).map(|p| knowledge::context(&p, &query)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn delete_project(app: AppHandle, id: String) -> CmdResult<()> {
     storage::delete_project(&app, &id)
@@ -296,9 +359,16 @@ async fn dictation_start(dictation: State<'_, Dictation>, on_level: Channel<f32>
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct Transcript {
+    text: String,
+    /// Information à afficher (repli sur un autre modèle…).
+    note: Option<String>,
+}
+
 /// Arrête l'enregistrement ; le transcrit si `transcribe`, sinon l'abandonne.
 #[tauri::command]
-async fn dictation_stop(app: AppHandle, dictation: State<'_, Dictation>, transcribe: bool) -> CmdResult<Option<String>> {
+async fn dictation_stop(app: AppHandle, dictation: State<'_, Dictation>, transcribe: bool) -> CmdResult<Option<Transcript>> {
     let Some(rec) = dictation.0.lock().unwrap().take() else { return Ok(None) };
     let captured = tauri::async_runtime::spawn_blocking(move || rec.finish()).await.map_err(|e| e.to_string())?;
     if !transcribe {
@@ -314,8 +384,17 @@ async fn dictation_stop(app: AppHandle, dictation: State<'_, Dictation>, transcr
     let custom = settings.transcription_url.trim();
     // La clé Mistral n'est jamais envoyée à un serveur de transcription tiers.
     let (base, key) = if custom.is_empty() { (settings.base_url.as_str(), api_key()?) } else { (custom, String::new()) };
-    let model = if settings.transcription_model.trim().is_empty() { "voxtral-mini-latest" } else { settings.transcription_model.trim() };
-    mistral::transcribe(base, &key, model, settings.transcription_language.trim(), captured.wav).await.map(Some)
+    let model = if settings.transcription_model.trim().is_empty() { mistral::TRANSCRIBE_MODEL } else { settings.transcription_model.trim() };
+    let (lang, vocab) = (settings.transcription_language.trim(), settings.vocabulary());
+    match mistral::transcribe(base, &key, model, lang, &vocab, captured.wav.clone()).await {
+        Ok(text) => Ok(Some(Transcript { text, note: None })),
+        // Modèle refusé (pas encore ouvert sur ce compte, nom changé…) : repli sur Voxtral 2.
+        Err(e) if custom.is_empty() && model != mistral::TRANSCRIBE_FALLBACK && mistral::is_model_error(&e) => {
+            let text = mistral::transcribe(base, &key, mistral::TRANSCRIBE_FALLBACK, lang, &vocab, captured.wav).await?;
+            Ok(Some(Transcript { text, note: Some(format!("Modèle {model} indisponible ({e}) : transcription faite avec {}.", mistral::TRANSCRIBE_FALLBACK)) }))
+        }
+        Err(e) => Err(e),
+    }
 }
 
 // ------------------------------------------------------------------ SSH
@@ -564,18 +643,71 @@ async fn check_update() -> CmdResult<updates::UpdateInfo> {
     updates::check().await
 }
 
+/// Clé publique de signature des mises à jour, fournie au moment de la compilation (CI).
+fn updater_pubkey() -> Option<&'static str> {
+    option_env!("TAURI_UPDATER_PUBKEY").filter(|k| !k.trim().is_empty())
+}
+
+/// Installation automatique possible ? (build signé ; sous Linux, seulement l'AppImage :
+/// les paquets .deb/.rpm se mettent à jour avec le gestionnaire de paquets).
+#[tauri::command]
+fn updater_supported() -> bool {
+    updater_pubkey().is_some() && (!cfg!(target_os = "linux") || std::env::var_os("APPIMAGE").is_some())
+}
+
+/// Télécharge la mise à jour, vérifie sa signature, l'installe puis redémarre l'application.
+#[tauri::command]
+async fn install_update(app: AppHandle, on_progress: Channel<serde_json::Value>) -> CmdResult<()> {
+    use tauri_plugin_updater::UpdaterExt;
+    if !updater_supported() {
+        return Err("Installation automatique indisponible pour ce type d'installation".into());
+    }
+    let update = app
+        .updater()
+        .map_err(|e| e.to_string())?
+        .check()
+        .await
+        .map_err(|e| format!("Vérification impossible : {e}"))?
+        .ok_or("Aucune mise à jour disponible")?;
+    let mut done: u64 = 0;
+    update
+        .download_and_install(
+            |chunk, total| {
+                done += chunk as u64;
+                let _ = on_progress.send(serde_json::json!({ "done": done, "total": total }));
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| format!("Installation impossible : {e}"))?;
+    app.restart()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(unix)]
     mcp::fix_path_env();
 
-    let app = tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    if let Some(pubkey) = updater_pubkey() {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().pubkey(pubkey).build());
+    }
+    let app = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Streams::default())
         .manage(Dictation::default())
         .manage(Arc::new(McpManager::default()))
         .setup(|app| {
+            // Chiffrement des données locales : activé avant tout accès aux conversations,
+            // puis conversion des fichiers existants (synchrone, pour éviter toute course).
+            if storage::load_settings(app.handle()).map(|s| s.encrypt_data).unwrap_or(false) {
+                match enable_encryption(app.handle()) {
+                    Ok(n) if n > 0 => eprintln!("chiffrement : {n} fichier(s) converti(s)"),
+                    Ok(_) => {}
+                    Err(e) => *vault::LAST_ERROR.lock().unwrap() = Some(e),
+                }
+            }
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mgr = handle.state::<Arc<McpManager>>().inner().clone();
@@ -588,6 +720,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             api_key_status,
+            vault_status,
+            vault_export_key,
+            vault_import_key,
             set_api_key,
             delete_api_key,
             get_settings,
@@ -597,6 +732,7 @@ pub fn run() {
             load_conversation,
             save_conversation,
             delete_conversation,
+            search_conversations,
             export_conversation,
             data_dir,
             chat_stream,
@@ -618,6 +754,8 @@ pub fn run() {
             record_usage,
             get_usage,
             check_update,
+            updater_supported,
+            install_update,
             ssh_hosts,
             ssh_save_host,
             ssh_delete_host,
@@ -640,6 +778,7 @@ pub fn run() {
             list_projects,
             save_project,
             delete_project,
+            project_context,
             dictation_start,
             dictation_stop,
         ])

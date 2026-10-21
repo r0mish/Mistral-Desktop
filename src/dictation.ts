@@ -98,9 +98,10 @@ async function stop(transcribe: boolean) {
     return;
   }
   try {
-    const text = await api.dictationStop(transcribe);
-    if (text) insertText(text);
+    const res = await api.dictationStop(transcribe);
+    if (res?.text) insertText(res.text);
     else if (transcribe) notify("Rien n'a été reconnu.", true);
+    if (res?.note) notify(res.note);
   } catch (e) {
     notify(errMsg(e), true);
   } finally {

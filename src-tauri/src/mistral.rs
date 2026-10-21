@@ -459,7 +459,17 @@ pub async fn ocr(base: &str, key: &str, name: &str, data_url: &str) -> Result<St
 }
 
 /// Transcription audio (Voxtral, ou tout serveur compatible `/v1/audio/transcriptions`).
-pub async fn transcribe(base: &str, key: &str, model: &str, language: &str, wav: Vec<u8>) -> Result<String, String> {
+/// Modèle de transcription par défaut (Voxtral 3) et repli (Voxtral 2) si le premier est refusé.
+pub const TRANSCRIBE_MODEL: &str = "voxtral-mini-transcribe-3-0";
+pub const TRANSCRIBE_FALLBACK: &str = "voxtral-mini-latest";
+
+/// Erreur liée au nom du modèle (inconnu, non disponible pour ce compte…).
+pub fn is_model_error(e: &str) -> bool {
+    let l = e.to_lowercase();
+    (l.contains("erreur api 400") || l.contains("erreur api 404") || l.contains("erreur api 422")) && l.contains("model")
+}
+
+pub async fn transcribe(base: &str, key: &str, model: &str, language: &str, vocabulary: &[String], wav: Vec<u8>) -> Result<String, String> {
     let part = reqwest::multipart::Part::bytes(wav)
         .file_name("dictee.wav")
         .mime_str("audio/wav")
@@ -467,6 +477,10 @@ pub async fn transcribe(base: &str, key: &str, model: &str, language: &str, wav:
     let mut form = reqwest::multipart::Form::new().text("model", model.to_owned()).part("file", part);
     if !language.is_empty() {
         form = form.text("language", language.to_owned());
+    }
+    // Vocabulaire métier (noms propres, termes techniques) : biais de contexte de Voxtral.
+    for term in vocabulary {
+        form = form.text("context_bias", term.clone());
     }
     let mut req = client()?.post(endpoint(base, "audio/transcriptions")).multipart(form).timeout(Duration::from_secs(300));
     if !key.is_empty() {

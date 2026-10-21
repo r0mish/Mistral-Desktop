@@ -112,12 +112,30 @@ jobs:
 
       - run: npm ci
 
+      # Mises à jour signées : uniquement si la clé privée (secret) et la clé publique (variable)
+      # sont configurées dans le dépôt. Sinon, build classique sans installation automatique.
+      - name: Signature des mises à jour
+        id: updater
+        shell: bash
+        env:
+          HAS_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' && vars.TAURI_UPDATER_PUBKEY != '' }}
+        run: |
+          if [ "$HAS_KEY" = "true" ]; then
+            echo "args=--config '{\"bundle\":{\"createUpdaterArtifacts\":true}}'" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Clé de signature absente : mises à jour à installer manuellement."
+          fi
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} ${{ steps.updater.outputs.args }}
+          updaterJsonPreferNsis: true
 
   publish:
     needs: [create-release, build]

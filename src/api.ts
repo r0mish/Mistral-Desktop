@@ -28,6 +28,10 @@ export interface Settings {
   transcriptionLanguage: string;
   /** Serveur de transcription dédié (vide = API Mistral). */
   transcriptionUrl: string;
+  /** Termes à favoriser (un par ligne ou séparés par des virgules). */
+  transcriptionVocabulary: string;
+  encryptData: boolean;
+  settingsVersion?: number;
 }
 
 export interface ModelInfo {
@@ -133,6 +137,22 @@ export interface Project {
   updatedAt: number;
 }
 
+export interface SearchHit {
+  id: string;
+  snippet: string | null;
+}
+
+export interface ProjectContext {
+  mode: "full" | "excerpts";
+  text: string;
+}
+
+export interface VaultStatus {
+  enabled: boolean;
+  hasKey: boolean;
+  error: string | null;
+}
+
 export interface InstructionFile {
   name: string;
   content: string;
@@ -166,6 +186,8 @@ export interface ToolContext {
   web: boolean;
   mcp: boolean;
   system?: boolean;
+  /** Projet volumineux : outil search_project_files. */
+  project?: string;
 }
 
 export type Risk = "read" | "write" | "exec" | "mcp";
@@ -300,7 +322,21 @@ export const api = {
     channel.onmessage = onLevel;
     return invoke<void>("dictation_start", { onLevel: channel });
   },
-  dictationStop: (transcribe: boolean) => invoke<string | null>("dictation_stop", { transcribe }),
+  dictationStop: (transcribe: boolean) => invoke<{ text: string; note: string | null } | null>("dictation_stop", { transcribe }),
+
+  searchConversations: (query: string) => invoke<SearchHit[]>("search_conversations", { query }),
+  projectContext: (id: string, query: string) => invoke<ProjectContext>("project_context", { id, query }),
+
+  vaultStatus: () => invoke<VaultStatus>("vault_status"),
+  vaultExportKey: () => invoke<string>("vault_export_key"),
+  vaultImportKey: (key: string) => invoke<void>("vault_import_key", { key }),
+
+  updaterSupported: () => invoke<boolean>("updater_supported"),
+  installUpdate(onProgress: (p: { done: number; total: number | null }) => void): Promise<void> {
+    const channel = new Channel<{ done: number; total: number | null }>();
+    channel.onmessage = onProgress;
+    return invoke<void>("install_update", { onProgress: channel });
+  },
 
   toolDefinitions: (ctx: ToolContext) => invoke<ToolDef[]>("tool_definitions", { ctx }),
   toolOutside: (ctx: ToolContext, name: string, args: string) =>

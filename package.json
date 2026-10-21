@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:e2e": "node --test e2e/"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.3",

@@ -139,10 +139,17 @@ Emplacements locaux :
 
 ### Mises à jour signées (mainteneurs)
 
-L'installation automatique nécessite une paire de clés de signature (minisign, via la CLI Tauri). Une seule fois :
+L'installation automatique nécessite une paire de clés de signature (minisign, via la CLI Tauri). Une seule fois, depuis n'importe quel dossier :
 
 ```bash
-npx tauri signer generate -w ~/.tauri/mistral-desktop.key
+# macOS / Linux
+npx @tauri-apps/cli signer generate -w ~/.tauri/mistral-desktop.key
+```
+
+```powershell
+# Windows (PowerShell : « ~ » n'est pas transmis aux programmes externes)
+New-Item -ItemType Directory -Force "$HOME\.tauri" | Out-Null
+npx @tauri-apps/cli signer generate -w "$HOME\.tauri\mistral-desktop.key"
 ```
 
 Puis dans le dépôt GitHub → Settings → Secrets and variables → Actions :

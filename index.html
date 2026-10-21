@@ -314,6 +314,13 @@
           <fieldset>
             <legend>Agent de code</legend>
             <label>Modèle par défaut (Code) <select id="s-code-model"></select></label>
+            <label>Mode des nouvelles sessions
+              <select id="s-permission">
+                <option value="auto">Autonome : modifications et commandes sans confirmation</option>
+                <option value="acceptEdits">Modifs auto : commandes soumises à approbation</option>
+                <option value="ask">Tout demander</option>
+              </select>
+            </label>
             <label>Délai maximal d'une commande (secondes)
               <input id="s-timeout" type="number" min="5" max="3600" step="5" />
             </label>
@@ -335,7 +342,7 @@
             </label>
             <p class="muted small" id="s-shell-info"></p>
             <label class="check"><input id="s-auto-continue" type="checkbox" /> Relancer l'agent s'il s'arrête en annonçant une action sans l'exécuter (2 fois max par tâche)</label>
-            <p class="muted small">L'agent ne peut lire et écrire que dans le dossier de projet choisi. Les commandes s'exécutent avec vos droits : en mode « Tout demander » ou « Modifs auto », chacune doit être approuvée.</p>
+            <p class="muted small">L'agent ne peut lire et écrire que dans le dossier de projet choisi. Les commandes s'exécutent avec vos droits : en mode « Tout demander » ou « Modifs auto », chacune doit être approuvée ; en mode Autonome, aucune. Le mode se change à tout moment pour la session en cours (menu en haut).</p>
           </fieldset>
           <fieldset>
             <legend>Dossiers de projet autorisés</legend>

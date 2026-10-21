@@ -253,7 +253,7 @@ export function newChat() {
     workspace: state.mode === "code" ? projectWorkspace(state.projectFilter) : undefined,
     webSearch: state.settings.webSearchDefault,
     mcp: true,
-    permissionMode: "ask",
+    permissionMode: state.settings.defaultPermission ?? "auto",
     projectId: state.projectFilter || undefined,
   };
   state.selectedModel = defaultModelFor(state.mode);

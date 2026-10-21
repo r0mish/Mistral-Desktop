@@ -37,6 +37,8 @@ export async function launch(prepare = () => {}, { keepHome = false } = {}) {
       defaultModel: "mistral-medium-latest",
       codeModel: "devstral-medium-latest",
       checkUpdates: false,
+      // Les scénarios vérifient les demandes d'approbation.
+      defaultPermission: "ask",
       encryptData: false,
       settingsVersion: 1,
     }),

@@ -107,4 +107,21 @@ test("application de bout en bout", async (t) => {
     await d.waitText("#activity", "refusé");
     await idle(d);
   });
+
+  await step(t, "mode par défaut des nouvelles sessions", async () => {
+    await d.click("#open-settings");
+    await d.click('.settings-tabs [data-tab="code"]');
+    assert.equal(await d.exec(() => document.querySelector("#s-permission").value), "ask");
+    await setValue(d, "#s-permission", "auto");
+    await d.click("#settings-save");
+    await d.waitFor(() => !document.querySelector("#settings").open, { message: "réglages enregistrés" });
+    await d.click("#new-chat");
+    await d.click(".welcome [data-ws]");
+    assert.equal(await d.exec(() => document.querySelector("#perm-select").value), "auto");
+    // Autonome : l'écriture se fait sans demande d'approbation.
+    await send("ÉCRIS sans demander");
+    await d.waitText("#messages", "Outil terminé");
+    await idle(d);
+    assert.equal(await d.exec(() => document.querySelectorAll("[data-approve]").length), 0);
+  });
 });

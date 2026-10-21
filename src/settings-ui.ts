@@ -36,6 +36,7 @@ const s = {
   updates: $<HTMLInputElement>("#s-updates"),
   updateStatus: $("#update-status"),
   maxSteps: $<HTMLInputElement>("#s-max-steps"),
+  permission: $<HTMLSelectElement>("#s-permission"),
   compact: $<HTMLInputElement>("#s-compact"),
   autoContinue: $<HTMLInputElement>("#s-auto-continue"),
   usagePeriod: $<HTMLSelectElement>("#usage-period"),
@@ -269,6 +270,7 @@ export async function openSettings(tab = "general") {
   s.pdf.value = st.pdfMode;
   s.timeout.value = String(st.commandTimeout);
   s.maxSteps.value = String(st.maxSteps);
+  s.permission.value = st.defaultPermission ?? "auto";
   s.compact.value = String(st.autoCompactPercent);
   s.autoContinue.checked = st.autoContinue;
   s.updates.checked = st.checkUpdates;
@@ -340,6 +342,7 @@ $("#settings-form").addEventListener("submit", async (e) => {
     codeModel: s.codeModel.value,
     commandTimeout: Math.max(5, Number(s.timeout.value) || 120),
     maxSteps: Math.max(5, Number(s.maxSteps.value) || 100),
+    defaultPermission: s.permission.value as Settings["defaultPermission"],
     autoCompactPercent: Math.min(95, Math.max(0, Number(s.compact.value) || 0)),
     autoContinue: s.autoContinue.checked,
     checkUpdates: s.updates.checked,
@@ -378,6 +381,7 @@ $("#settings-form").addEventListener("submit", async (e) => {
     if (!state.current) {
       state.selectedModel = defaultModelFor(state.mode);
       state.draft.webSearch = next.webSearchDefault;
+      state.draft.permissionMode = next.defaultPermission;
     }
     el.settings.close();
     if (baseChanged) await loadModels();

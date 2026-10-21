@@ -17,8 +17,10 @@ function script(req) {
   const system = text(msgs.find((m) => m.role === "system")?.content);
   const ask = text(lastUser(msgs)?.content);
   if (last.role === "tool") {
-    return { content: `Fichier écrit. Résultat : ${text(last.content).slice(0, 80)}` };
+    return { content: `Outil terminé. Résultat : ${text(last.content).slice(0, 200)}` };
   }
+  const run = ask.match(/EXÉCUTE (.+)/);
+  if (run) return { toolCalls: [{ name: "run_command", arguments: { command: run[1] } }] };
   if (ask.includes("ÉCRIS")) {
     return { toolCalls: [{ name: "write_file", arguments: { path: "notes/e2e.txt", content: "créé par le test e2e\n" } }] };
   }

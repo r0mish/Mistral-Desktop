@@ -12,6 +12,7 @@ import {
   type Message,
   type ModelInfo,
   type PermissionMode,
+  type ProjectContext,
   type Project,
   type Risk,
   type Settings,
@@ -137,6 +138,10 @@ const state = {
   projectFilter: "",
   /** Fichiers de consignes (AGENTS.md…) par dossier de projet. */
   instructions: new Map<string, InstructionFile[]>(),
+  /** Recherche plein texte : requête et résultats (id → extrait). */
+  search: { query: "", hits: new Map<string, string | null>() },
+  /** Fichiers de référence préparés pour la dernière question, par conversation. */
+  projectCtx: new Map<string, ProjectContext>(),
 };
 
 const uid = () => crypto.randomUUID();
@@ -154,11 +159,24 @@ function platformFor(conv: Conversation): Platform {
   };
 }
 
+/** Seuil au-delà duquel seuls des extraits sont joints (knowledge::FULL_CONTEXT_CHARS). */
+const FULL_PROJECT_CHARS = 60_000;
+
+function projectFilesFor(conv: Conversation): string | undefined {
+  const p = findProject(conv.projectId);
+  if (!p) return undefined;
+  const ctx = state.projectCtx.get(conv.id);
+  if (ctx) return ctx.text;
+  // Pas encore préparé (estimation du contexte) : un gros projet n'est jamais joint en entier.
+  return projectChars(p) > FULL_PROJECT_CHARS ? "(extraits pertinents sélectionnés à chaque question)" : undefined;
+}
+
 /** Invite système complète : consignes du dossier (AGENTS.md…) et projet inclus. */
 const sysPrompt = (conv: Conversation) =>
   systemPrompt(conv, state.settings, platformFor(conv), {
     instructions: conv.kind === "code" && conv.workspace ? state.instructions.get(conv.workspace) : undefined,
     project: findProject(conv.projectId),
+    projectFiles: projectFilesFor(conv),
   });
 
 // ---------------------------------------------------------------- utilitaires
@@ -248,8 +266,9 @@ function renderSidebar() {
   renderProjectBar();
   const q = el.search.value.trim().toLowerCase();
   const pf = state.projectFilter;
+  const hits = state.search.query === q ? state.search.hits : null;
   const list = state.convs.filter(
-    (c) => c.kind === state.mode && (!pf || c.projectId === pf) && (!q || c.title.toLowerCase().includes(q)),
+    (c) => c.kind === state.mode && (!pf || c.projectId === pf) && (!q || c.title.toLowerCase().includes(q) || !!hits?.has(c.id)),
   );
   let html = "";
   let bucket = "";
@@ -264,7 +283,10 @@ function renderSidebar() {
       c.workspace ? workspaceLabel(c.workspace).name : "",
       !pf && c.projectId ? (findProject(c.projectId)?.name ?? "") : "",
     ].filter(Boolean);
-    const sub = subParts.length ? `<span class="conv-sub">${escapeHtml(subParts.join(" · "))}</span>` : "";
+    const snippet = q && hits?.get(c.id);
+    const sub = snippet
+      ? `<span class="conv-sub conv-snippet">${highlight(snippet, q)}</span>`
+      : subParts.length ? `<span class="conv-sub">${escapeHtml(subParts.join(" · "))}</span>` : "";
     html += `<div class="conv${active}" data-id="${c.id}">
       <span class="conv-text"><span class="conv-title">${escapeHtml(c.title)}</span>${sub}</span>
       <span class="conv-actions">
@@ -273,7 +295,7 @@ function renderSidebar() {
       </span>
     </div>`;
   }
-  const empty = q ? "Aucun résultat" : pf ? "Aucune conversation dans ce projet" : state.mode === "code" ? "Aucune session de code" : "Aucune conversation";
+  const empty = q ? (hits ? "Aucun résultat" : "Recherche…") : pf ? "Aucune conversation dans ce projet" : state.mode === "code" ? "Aucune session de code" : "Aucune conversation";
   el.convList.innerHTML = html || `<p class="empty-list">${empty}</p>`;
 }
 
@@ -344,7 +366,31 @@ async function refreshConvs() {
   renderSidebar();
 }
 
-el.search.addEventListener("input", renderSidebar);
+/** Met en évidence la requête dans un extrait (insensible à la casse et aux accents). */
+function highlight(text: string, q: string): string {
+  const fold = (s: string) => s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+  const plain = fold(text);
+  const i = plain.indexOf(fold(q));
+  if (i < 0 || plain.length !== text.length) return escapeHtml(text);
+  return escapeHtml(text.slice(0, i)) + `<mark>${escapeHtml(text.slice(i, i + q.length))}</mark>` + escapeHtml(text.slice(i + q.length));
+}
+
+let searchTimer = 0;
+let searchSeq = 0;
+el.search.addEventListener("input", () => {
+  renderSidebar();
+  clearTimeout(searchTimer);
+  const q = el.search.value.trim().toLowerCase();
+  if (q.length < 2) return;
+  // Recherche dans le contenu des conversations (côté Rust, données déchiffrées en mémoire seulement).
+  searchTimer = window.setTimeout(async () => {
+    const seq = ++searchSeq;
+    const hits = await api.searchConversations(q).catch(() => []);
+    if (seq !== searchSeq) return;
+    state.search = { query: q, hits: new Map(hits.map((h) => [h.id, h.snippet])) };
+    renderSidebar();
+  }, 250);
+});
 
 document.querySelector(".mode-tabs")!.addEventListener("click", (e) => {
   const b = (e.target as HTMLElement).closest<HTMLElement>("[data-mode]");
@@ -740,7 +786,9 @@ function projectBanner(): string {
     p.instructions.trim() ? "consignes" : "",
     n ? `${n} fichier${n > 1 ? "s" : ""} de référence` : "",
     p.workspace ? `dossier ${workspaceLabel(p.workspace).name}` : "",
-    `≈ ${Math.round(projectChars(p) / 3.5).toLocaleString("fr-FR")} tokens de contexte`,
+    projectChars(p) > FULL_PROJECT_CHARS
+      ? "recherche locale par extraits"
+      : `≈ ${Math.round(projectChars(p) / 3.5).toLocaleString("fr-FR")} tokens de contexte`,
   ].filter(Boolean);
   return `<div class="project-banner">${icons.folder}<div><strong>Projet ${escapeHtml(p.name)}</strong><small>${bits.join(" · ")}</small></div>
     <button class="btn-ghost sm" data-edit-project>Modifier</button></div>`;
@@ -1024,6 +1072,7 @@ const toolCtx = (c: Conversation): ToolContext => ({
   web: !!c.webSearch,
   mcp: c.mcp !== false,
   system: c.kind === "code" && !!c.systemAccess,
+  project: c.projectId && state.projectCtx.get(c.id)?.mode === "excerpts" ? c.projectId : undefined,
 });
 
 // ---------------------------------------------------------------- activité, contexte, consommation
@@ -1353,6 +1402,16 @@ async function runAgent() {
   updateComposerState();
   renderSidebar();
 
+  if (conv.projectId && findProject(conv.projectId)?.files.length) {
+    // Gros projets : seuls les extraits pertinents pour la dernière question sont joints.
+    const question = [...conv.messages].reverse().find((m) => m.role === "user" && !m.auto)?.content ?? "";
+    setActivity("Recherche dans les fichiers du projet…");
+    try {
+      state.projectCtx.set(conv.id, await api.projectContext(conv.projectId, question));
+    } catch {
+      state.projectCtx.delete(conv.id);
+    }
+  }
   if (conv.kind === "code" && conv.workspace) {
     // Relu à chaque tâche : l'agent ou l'utilisateur ont pu modifier AGENTS.md.
     setActivity("Lecture des consignes du projet…", workspaceLabel(conv.workspace).name);
@@ -1662,6 +1721,12 @@ const s = {
   sttModel: $<HTMLInputElement>("#s-stt-model"),
   sttLang: $<HTMLSelectElement>("#s-stt-lang"),
   sttUrl: $<HTMLInputElement>("#s-stt-url"),
+  sttVocab: $<HTMLTextAreaElement>("#s-stt-vocab"),
+  encrypt: $<HTMLInputElement>("#s-encrypt"),
+  vaultStatus: $("#vault-status"),
+  vaultKeyRow: $("#vault-key-row"),
+  vaultKey: $<HTMLInputElement>("#vault-key"),
+  vaultKeyAction: $<HTMLButtonElement>("#vault-key-action"),
 };
 
 function renderShellInfo() {
@@ -1706,6 +1771,10 @@ s.usagePeriod.addEventListener("change", renderUsageTab);
 
 // ---------------------------------------------------------------- mises à jour
 
+/** Installation automatique possible (build signé, type d'installation compatible). */
+let updaterSupported = false;
+let installing = false;
+
 function renderUpdateBanner() {
   const u = state.update;
   if (!u?.available || u.latest === state.settings.skippedVersion) {
@@ -1714,7 +1783,9 @@ function renderUpdateBanner() {
   }
   el.updateBanner.innerHTML = `<span>🎉 <strong>Mistral Desktop ${escapeHtml(u.latest)}</strong> est disponible (vous avez ${escapeHtml(u.current)}).</span>
     <span class="row">
-      <button type="button" class="btn-primary sm" data-upd="download">${u.assetName ? `Télécharger ${escapeHtml(u.assetName.replace(/^.*\./, "."))}` : "Télécharger"}</button>
+      ${updaterSupported
+        ? `<button type="button" class="btn-primary sm" data-upd="install">Installer et redémarrer</button>`
+        : `<button type="button" class="btn-primary sm" data-upd="download">${u.assetName ? `Télécharger ${escapeHtml(u.assetName.replace(/^.*\./, "."))}` : "Télécharger"}</button>`}
       <button type="button" class="btn-ghost sm" data-upd="notes">Nouveautés</button>
       <button type="button" class="btn-ghost sm" data-upd="skip">Ignorer cette version</button>
       <button type="button" class="icon-btn sm" data-upd="close" title="Fermer">×</button>
@@ -1727,6 +1798,7 @@ el.updateBanner.addEventListener("click", (e) => {
   const u = state.update;
   if (!action || !u) return;
   if (action === "download") openUrl(u.assetUrl ?? u.releaseUrl).catch((err) => toast(errMsg(err), true));
+  if (action === "install") installUpdate();
   if (action === "notes") openUrl(u.releaseUrl).catch((err) => toast(errMsg(err), true));
   if (action === "skip") {
     state.settings.skippedVersion = u.latest;
@@ -1734,6 +1806,31 @@ el.updateBanner.addEventListener("click", (e) => {
   }
   if (action === "skip" || action === "close") el.updateBanner.hidden = true;
 });
+
+/** Télécharge, vérifie la signature, installe puis redémarre (géré côté Rust). */
+async function installUpdate() {
+  if (installing) return;
+  if (state.busy) {
+    toast("Attendez la fin de la tâche en cours avant d'installer la mise à jour.", true);
+    return;
+  }
+  installing = true;
+  const btn = el.updateBanner.querySelector<HTMLButtonElement>('[data-upd="install"]');
+  if (btn) btn.disabled = true;
+  try {
+    await api.installUpdate(({ done, total }) => {
+      if (btn) btn.textContent = total ? `Téléchargement ${Math.round((done / total) * 100)} %` : `Téléchargement ${(done / 1048576).toFixed(1)} Mo`;
+    });
+  } catch (e) {
+    toast(errMsg(e), true);
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Installer et redémarrer";
+    }
+  } finally {
+    installing = false;
+  }
+}
 
 async function checkUpdate(manual = false) {
   try {
@@ -1857,6 +1954,56 @@ s.wsList.addEventListener("click", async (e) => {
 
 s.webProvider.addEventListener("change", () => (s.searxWrap.hidden = s.webProvider.value !== "searxng"));
 
+async function renderVaultStatus() {
+  const v = await api.vaultStatus().catch(() => null);
+  if (!v) return;
+  s.vaultStatus.className = v.error ? "small error" : "muted small";
+  s.vaultStatus.textContent = v.error
+    ? `⚠ Chiffrement inactif : ${v.error}`
+    : v.enabled
+      ? "✓ Données chiffrées sur cet appareil."
+      : v.hasKey
+        ? "Chiffrement désactivé (les données sont en clair sur le disque)."
+        : "Chiffrement désactivé.";
+}
+
+let vaultMode: "copy" | "restore" = "copy";
+$("#vault-show").addEventListener("click", async () => {
+  try {
+    s.vaultKey.value = await api.vaultExportKey();
+    s.vaultKey.readOnly = true;
+    vaultMode = "copy";
+    s.vaultKeyAction.textContent = "Copier";
+    s.vaultKeyRow.hidden = false;
+    s.vaultKey.select();
+  } catch (e) {
+    toast(errMsg(e), true);
+  }
+});
+$("#vault-restore").addEventListener("click", () => {
+  s.vaultKey.value = "";
+  s.vaultKey.readOnly = false;
+  s.vaultKey.placeholder = "Collez la clé de récupération";
+  vaultMode = "restore";
+  s.vaultKeyAction.textContent = "Restaurer";
+  s.vaultKeyRow.hidden = false;
+  s.vaultKey.focus();
+});
+s.vaultKeyAction.addEventListener("click", async () => {
+  if (vaultMode === "copy") return copy(s.vaultKey.value, s.vaultKeyAction);
+  try {
+    await api.vaultImportKey(s.vaultKey.value);
+    s.vaultKeyRow.hidden = true;
+    toast("Clé restaurée");
+    await refreshConvs();
+    await loadProjects();
+    renderSidebar();
+    renderVaultStatus();
+  } catch (e) {
+    toast(errMsg(e), true);
+  }
+});
+
 async function openSettings(tab = "general") {
   const st = state.settings;
   await refreshKeyStatus();
@@ -1884,6 +2031,10 @@ async function openSettings(tab = "general") {
   s.sttModel.value = st.transcriptionModel ?? "";
   s.sttLang.value = st.transcriptionLanguage ?? "fr";
   s.sttUrl.value = st.transcriptionUrl ?? "";
+  s.sttVocab.value = st.transcriptionVocabulary ?? "";
+  s.encrypt.checked = st.encryptData !== false;
+  s.vaultKeyRow.hidden = true;
+  renderVaultStatus();
   renderShellInfo();
   if (!s.updateStatus.textContent) s.updateStatus.textContent = `Version installée : ${state.platform.version}`;
   renderUsageTab();
@@ -1951,6 +2102,8 @@ $("#settings-form").addEventListener("submit", async (e) => {
     transcriptionModel: s.sttModel.value.trim() || "voxtral-mini-latest",
     transcriptionLanguage: s.sttLang.value,
     transcriptionUrl: s.sttUrl.value.trim(),
+    transcriptionVocabulary: s.sttVocab.value,
+    encryptData: s.encrypt.checked,
   };
   try {
     next.prices = parsePrices(s.prices.value);
@@ -1967,6 +2120,11 @@ $("#settings-form").addEventListener("submit", async (e) => {
   try {
     const baseChanged = next.baseUrl !== state.settings.baseUrl;
     await api.saveSettings(next);
+    if (next.encryptData !== state.settings.encryptData || next.encryptData) {
+      const v = await api.vaultStatus().catch(() => null);
+      if (v?.error && next.encryptData) toast(`Chiffrement inactif : ${v.error}`, true);
+      else if (next.encryptData !== state.settings.encryptData) toast(next.encryptData ? "Données chiffrées" : "Chiffrement désactivé : données déchiffrées");
+    }
     const shellChanged = next.shell !== state.settings.shell;
     state.settings = next;
     if (shellChanged) state.platform = await api.platform().catch(() => state.platform);
@@ -2079,6 +2237,7 @@ async function init() {
   el.input.focus();
   await loadModels();
   renderUsage();
+  updaterSupported = await api.updaterSupported().catch(() => false);
   if (state.settings.checkUpdates) {
     checkUpdate();
     window.setInterval(() => state.settings.checkUpdates && checkUpdate(), 6 * 3600 * 1000);

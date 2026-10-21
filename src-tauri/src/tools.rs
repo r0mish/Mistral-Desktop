@@ -27,6 +27,9 @@ pub struct ToolContext {
     /// Accès système : fichiers hors du dossier de projet autorisés (chemins absolus).
     #[serde(default)]
     pub system: bool,
+    /// Projet dont les fichiers de référence sont trop gros pour être joints : outil de recherche.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -198,6 +201,17 @@ pub fn definitions(ctx: &ToolContext, mcp: &McpManager, shell: &crate::shell::Sh
             },
         ]);
     }
+    if ctx.project.is_some() {
+        out.push(ToolDef {
+            risk: "read",
+            definition: func(
+                "search_project_files",
+                "Recherche des passages dans les fichiers de référence du projet (recherche par mots-clés, locale). Formule des mots-clés précis ; relance avec d'autres termes si le résultat ne suffit pas.",
+                json!({ "query": { "type": "string", "description": "Mots-clés ou question" } }),
+                &["query"],
+            ),
+        });
+    }
     if ctx.mcp {
         out.extend(mcp.tool_definitions().into_iter().map(|definition| ToolDef { definition, risk: "mcp" }));
     }
@@ -290,6 +304,7 @@ pub struct RunEnv<'a> {
     pub hosts: &'a [SshHost],
     pub mcp: &'a McpManager,
     pub cancel: Arc<Notify>,
+    pub project: Option<crate::storage::Project>,
 }
 
 pub async fn run(ctx: &ToolContext, env: RunEnv<'_>, name: &str, arguments: &str) -> ToolOutput {
@@ -340,6 +355,11 @@ async fn run_inner(ctx: &ToolContext, env: RunEnv<'_>, name: &str, arguments: &s
             let timeout = opt_u(&args, "timeout_seconds").map(|t| t as u64).unwrap_or(env.settings.command_timeout);
             let sh = crate::shell::detect(&env.settings.shell);
             Ok(text(target()?.run_command(&sh, s(&args, "command")?, timeout, env.cancel).await?))
+        }
+        "search_project_files" => {
+            let p = env.project.as_ref().ok_or("Aucun projet associé à cette conversation")?;
+            let found = crate::knowledge::search(p, s(&args, "query")?, crate::knowledge::TOOL_BUDGET);
+            Ok(text(if found.is_empty() { "Aucun passage ne correspond ; essaie d'autres mots-clés.".into() } else { found }))
         }
         "git_status" => Ok(text(git::status_text(&git::status(&target()?).await?))),
         "git_diff" => {

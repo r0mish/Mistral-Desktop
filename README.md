@@ -13,7 +13,7 @@ Client de bureau **léger, open source et sans télémétrie** pour l'API [Mistr
 - Rendu **Markdown** : tableaux, listes, blocs de code colorés avec bouton « Copier »
 - **Raisonnement** des modèles Magistral dans un bloc repliable
 - Pièces jointes : **images** (modèles vision), **PDF** et **fichiers texte/code**, par bouton, glisser-déposer ou collage
-- Historique local : recherche, renommage, suppression, regroupement par date ; modifier un message, régénérer une réponse
+- Historique local : **recherche plein texte** (titres et contenu des messages, insensible aux accents, extrait surligné), renommage, suppression, regroupement par date ; modifier un message, régénérer une réponse
 - Choix du modèle par conversation, instructions système, température, tokens max, **export Markdown**
 
 ### Projets
@@ -22,9 +22,12 @@ Comme dans Claude Desktop : des conversations regroupées qui partagent des **co
 - **Dossier de travail** du projet : dossier local ou dossier d'un **serveur SSH**. Les sessions de code du projet s'y ouvrent directement (en mode Code, « Nouveau projet » propose le dossier ouvert)
 - Une conversation peut changer de projet à tout moment (menu en haut de la fenêtre)
 - Consignes et fichiers sont ajoutés à l'invite système de chaque message du projet (estimation du nombre de tokens affichée) ; tout est stocké localement dans `projects/`
+- **Gros projets** (au-delà de 60 000 caractères, jusqu'à 10 millions) : recherche locale BM25 par extraits. Seuls les passages pertinents pour la question sont envoyés (≈ 4 k tokens par message), et le modèle dispose d'un outil `search_project_files` pour chercher d'autres passages. Aucun index ni embedding ne quitte la machine
 
 ### Dictée vocale
-Bouton micro dans la zone de saisie (`Ctrl/⌘+Maj+D`, `Échap` pour annuler) : capture native du micro, transcription par **Voxtral** (`voxtral-mini-latest`, modèle open-weight de Mistral), texte inséré au curseur.
+Bouton micro dans la zone de saisie (`Ctrl/⌘+Maj+D`, `Échap` pour annuler) : capture native du micro, transcription par **Voxtral 3** (`voxtral-mini-transcribe-3-0` par défaut, ou `voxtral-small-transcribe-3-0`, plus précis), texte inséré au curseur.
+- Si le modèle est refusé par l'API, repli automatique sur Voxtral 2 (`voxtral-mini-latest`), avec un message
+- **Vocabulaire personnalisé** (noms propres, termes techniques : Proxmox, fail2ban…) transmis comme biais de contexte
 - Le son reste **en mémoire** (WAV mono 16 kHz, jamais écrit sur le disque), 15 min max
 - Langue configurable (français par défaut) ou détection automatique
 - **Serveur de transcription auto-hébergé** possible (toute API compatible `/v1/audio/transcriptions` : Voxtral via vLLM, Speaches/faster-whisper…) ; la clé Mistral n'est alors jamais transmise
@@ -105,7 +108,7 @@ Configuration au **format de Claude Desktop** (Réglages → MCP) :
 - **Relance automatique** quand l'agent annonce une action (« Je vais maintenant… ») sans l'exécuter (2 fois max par tâche, désactivable)
 - **Jauge de contexte** (tokens utilisés / taille max du modèle) ; **compaction automatique** à 80 % : l'historique est résumé par le modèle, les messages restent affichés. Clic sur la jauge pour compacter à la main. Les anciens résultats d'outils sont tronqués dans les requêtes pour économiser le contexte
 - **Consommation** : tokens et coût estimé par conversation, historique par jour et par modèle (Réglages → Utilisation), tarifs modifiables
-- **Mises à jour** : détection des nouvelles releases GitHub, bandeau avec téléchargement direct de l'installateur adapté à votre système (désactivable)
+- **Mises à jour** : détection des nouvelles releases GitHub (désactivable). Bouton **« Installer et redémarrer »** : la mise à jour est téléchargée, sa **signature vérifiée** (clé publique intégrée à l'application, protection contre les retours à une version antérieure) puis installée. Sous Linux, uniquement pour l'AppImage ; les paquets `.deb`/`.rpm` se mettent à jour avec le gestionnaire de paquets
 
 ### Raccourcis
 `Ctrl/⌘+N` nouvelle conversation · `Ctrl/⌘+1` / `2` Chat / Code · `Ctrl/⌘+K` recherche · `Ctrl/⌘+B` barre latérale · `Ctrl/⌘+,` réglages · `Ctrl/⌘+G` panneau Git · `Ctrl/⌘+Maj+D` dictée · `Échap` arrêter
@@ -117,7 +120,7 @@ Configuration au **format de Claude Desktop** (Réglages → MCP) :
 | Télémétrie | Aucune. La seule requête non sollicitée est la vérification de mise à jour (`api.github.com`, sans identifiant), désactivable. |
 | Clé API | **Trousseau du système** (Keychain, Credential Manager, Secret Service/KWallet). Repli : variable `MISTRAL_API_KEY`. |
 | Appels réseau | Faits **côté Rust** (magasin de certificats du système, compatible avec les proxys d'entreprise) ; la clé n'est jamais exposée à la WebView. Destinations : l'URL d'API configurée, l'instance SearXNG éventuelle, les pages lues par `fetch_url`, vos serveurs MCP. |
-| Conversations | Fichiers JSON locaux, jamais synchronisés. |
+| Conversations | Fichiers JSON locaux, jamais synchronisés, **chiffrés par défaut** (XChaCha20-Poly1305) avec une clé de 256 bits gardée dans le trousseau du système : conversations, index, projets et `mcp.json`. Clé de récupération à sauvegarder dans votre gestionnaire de mots de passe (Réglages → Général). Si le trousseau est indisponible, les données restent en clair et un avertissement s'affiche. |
 | WebView | CSP stricte (aucune ressource distante, donc aucun pixel de suivi), HTML assaini par DOMPurify, liens ouverts dans le navigateur du système. |
 | Agent de code | Dossiers autorisés uniquement via la boîte de dialogue native ou une connexion SSH validée ; écritures et commandes soumises à approbation par défaut. ⚠️ En mode **Autonome**, les commandes s'exécutent avec vos droits sans confirmation : à réserver aux projets de confiance (le contenu lu sur le web ou dans le dépôt peut tenter d'influencer le modèle). |
 | Dictée | Micro ouvert uniquement pendant l'enregistrement (indicateur rouge), audio gardé en mémoire puis envoyé pour transcription à l'API Mistral ou à votre serveur. macOS demande l'autorisation d'accès au micro au premier usage. |
@@ -133,6 +136,21 @@ Emplacements locaux :
 | Windows | `%APPDATA%\dev.r0mish.mistral-desktop\` | idem |
 
 ## Installation
+
+### Mises à jour signées (mainteneurs)
+
+L'installation automatique nécessite une paire de clés de signature (minisign, via la CLI Tauri). Une seule fois :
+
+```bash
+npx tauri signer generate -w ~/.tauri/mistral-desktop.key
+```
+
+Puis dans le dépôt GitHub → Settings → Secrets and variables → Actions :
+- secret `TAURI_SIGNING_PRIVATE_KEY` : contenu de `~/.tauri/mistral-desktop.key`
+- secret `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` : le mot de passe choisi
+- variable `TAURI_UPDATER_PUBKEY` : contenu de `~/.tauri/mistral-desktop.key.pub`
+
+Les releases suivantes publient alors les paquets signés et `latest.json`. Sans ces clés, tout fonctionne comme avant (téléchargement manuel). Ne perdez pas la clé privée : sans elle, les versions installées ne pourront plus se mettre à jour automatiquement.
 
 ### Binaires
 
@@ -179,7 +197,10 @@ src-tauri/src/
   workspace.rs          Outils de code confinés au dossier de projet
   web.rs                SearXNG, lecture de pages (protection réseau local)
   mcp.rs                Client MCP stdio / HTTP, double génération de protocole
-  storage.rs            Stockage JSON atomique (conversations, projets), export Markdown
+  storage.rs            Stockage JSON atomique (conversations, projets), export Markdown, recherche plein texte
+  vault.rs              Chiffrement local (XChaCha20-Poly1305, clé dans le trousseau)
+  textsearch.rs         Recherche locale : plein texte, découpage et classement BM25
+  knowledge.rs          Fichiers de référence des projets : en entier ou extraits pertinents
   audio.rs              Capture du micro (cpal), rééchantillonnage 16 kHz, WAV en mémoire
   target.rs, ssh.rs     Dossier de projet local ou distant (OpenSSH), fichiers de consignes
   git.rs, shell.rs      Git, choix du shell (bash, Git Bash, PowerShell)

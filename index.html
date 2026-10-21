@@ -200,6 +200,21 @@
           </fieldset>
 
           <fieldset>
+            <legend>Chiffrement des données</legend>
+            <label class="check"><input id="s-encrypt" type="checkbox" /> Chiffrer les conversations, projets et la configuration MCP sur cet appareil</label>
+            <p class="muted small" id="vault-status"></p>
+            <p class="muted small">XChaCha20-Poly1305, clé de 256 bits gardée dans le trousseau du système. Sans cette clé (réinstallation, nouvel ordinateur, trousseau réinitialisé), les données chiffrées sont illisibles : conservez la clé de récupération dans votre gestionnaire de mots de passe (KeePassXC, Bitwarden…).</p>
+            <div class="row">
+              <button type="button" id="vault-show" class="btn-ghost sm">Afficher la clé de récupération</button>
+              <button type="button" id="vault-restore" class="btn-ghost sm">Restaurer une clé…</button>
+            </div>
+            <div class="row" id="vault-key-row" hidden>
+              <input id="vault-key" spellcheck="false" autocomplete="off" class="mono" />
+              <button type="button" id="vault-key-action" class="btn-primary sm">Copier</button>
+            </div>
+          </fieldset>
+
+          <fieldset>
             <legend>Mises à jour</legend>
             <label class="check"><input id="s-updates" type="checkbox" /> Vérifier au démarrage si une nouvelle version est publiée sur GitHub</label>
             <div class="row">
@@ -238,8 +253,12 @@
             <legend>Dictée vocale</legend>
             <div class="grid2">
               <label>Modèle de transcription
-                <input id="s-stt-model" list="stt-models" placeholder="voxtral-mini-latest" spellcheck="false" />
-                <datalist id="stt-models"><option value="voxtral-mini-latest"></option><option value="voxtral-mini-2507"></option></datalist>
+                <input id="s-stt-model" list="stt-models" placeholder="voxtral-mini-transcribe-3-0" spellcheck="false" />
+                <datalist id="stt-models">
+                  <option value="voxtral-mini-transcribe-3-0">Voxtral Mini Transcribe 3 (rapide, 0,0035 $/min)</option>
+                  <option value="voxtral-small-transcribe-3-0">Voxtral Small Transcribe 3 (plus précis, 0,004 $/min)</option>
+                  <option value="voxtral-mini-latest">Voxtral Mini Transcribe 2</option>
+                </datalist>
               </label>
               <label>Langue
                 <select id="s-stt-lang">
@@ -254,6 +273,9 @@
                 </select>
               </label>
             </div>
+            <label>Vocabulaire à reconnaître (noms propres, termes techniques)
+              <textarea id="s-stt-vocab" rows="2" placeholder="Ex. : Proxmox, fail2ban, ZFS, Nextcloud" spellcheck="false"></textarea>
+            </label>
             <label>Serveur de transcription (facultatif)
               <input id="s-stt-url" type="url" placeholder="vide = API Mistral ; ex. http://localhost:8000" spellcheck="false" />
             </label>

@@ -1,6 +1,6 @@
 [package]
 name = "mistral-desktop"
-version = "0.6.0"
+version = "0.7.0"
 description = "Client de bureau léger et respectueux de la vie privée pour l'API Mistral AI"
 authors = ["r0mish"]
 license = "MIT"
@@ -18,6 +18,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "zip"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots", "http2", "charset", "multipart"] }
@@ -32,6 +33,7 @@ ignore = "0.4"
 regex = "1"
 pdf-extract = "0.12"
 cpal = "0.18"
+chacha20poly1305 = "0.10"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

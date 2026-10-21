@@ -136,7 +136,7 @@ async function connect() {
       );
       $("#ssh-trust").addEventListener("click", async () => {
         try {
-          await api.sshTrust(host);
+          await api.sshTrust(host, typed);
           await connect();
         } catch (e) {
           showResult(escapeHtml(errMsg(e)), "error");

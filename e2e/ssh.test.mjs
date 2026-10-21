@@ -44,12 +44,20 @@ after(() => app?.close());
 const step = (t, name, fn) => stepOf(t, d, name, fn);
 const has2fa = cfg.twoFaPort && cfg.totpSecret;
 
+/** Ferme l'accès aux connexions maîtresses : la prochaine connexion s'authentifie à nouveau. */
+function dropMasters() {
+  const dir = `/tmp/md-ssh-${process.getuid()}`;
+  for (const f of readdirSync(dir)) rmSync(`${dir}/${f}`, { force: true });
+}
+
 /**
  * Ouvre la fenêtre des serveurs SSH depuis une nouvelle session de code et remplit le formulaire.
- * Chaque scénario d'authentification utilise son propre nom d'hôte : une connexion maîtresse
- * déjà ouverte vers le même hôte serait réutilisée sans nouvelle authentification.
+ * Une connexion maîtresse déjà ouverte vers le même hôte serait réutilisée sans nouvelle
+ * authentification : les scénarios d'authentification commencent par `dropMasters()`.
  */
-async function fillHost({ label, host = "127.0.0.1", port, password }) {
+async function fillHost({ label, port, password }) {
+  // Invite restée ouverte par un scénario précédent en échec.
+  if (await d.exec(() => document.querySelector("#ssh-prompt").open)) await d.click("#ssh-prompt-cancel");
   if (!(await d.exec(() => document.querySelector("#ssh-dialog").open))) {
     await d.click('.mode-tabs [data-mode="code"]');
     await d.click(".welcome [data-ssh]");
@@ -57,17 +65,20 @@ async function fillHost({ label, host = "127.0.0.1", port, password }) {
   }
   await d.click("#ssh-new");
   await d.type("#ssh-label", label);
-  await d.type("#ssh-host", host);
+  await d.type("#ssh-host", "127.0.0.1");
   await d.type("#ssh-user", cfg.user);
   await d.type("#ssh-port", String(port));
   await setValue(d, "#ssh-auth", "password");
   if (password) await d.type("#ssh-password", password);
   await d.click("#ssh-test");
   // Hôte inconnu : l'empreinte est montrée, on lui fait confiance.
-  await d.waitFor(() => document.querySelector("#ssh-trust") || document.querySelector("#ssh-result .ssh-msg.ok"), {
-    timeout: 30000,
-    message: "empreinte ou connexion",
-  });
+  await d.waitFor(
+    () =>
+      document.querySelector("#ssh-trust") ||
+      document.querySelector("#ssh-result .ssh-msg.ok, #ssh-result .ssh-msg.error") ||
+      document.querySelector("#ssh-prompt").open,
+    { timeout: 30000, message: "empreinte, invite ou résultat" },
+  );
   if (await d.exec(() => !!document.querySelector("#ssh-trust"))) await d.click("#ssh-trust");
 }
 
@@ -79,16 +90,23 @@ async function answerPrompt(expected, value) {
   await d.click('#ssh-prompt-form button[type="submit"]');
 }
 
-const connected = () => d.waitText("#ssh-result", `Connecté en tant que ${cfg.user}`, 60000);
+/** Connexion réussie, puis lecture des dossiers distants terminée (elle utilise la connexion). */
+async function connected() {
+  await d.waitText("#ssh-result", `Connecté en tant que ${cfg.user}`, 60000);
+  await d.waitFor(
+    () => {
+      const dirs = document.querySelector("#ssh-dirs");
+      return !document.querySelector("#ssh-browser").hidden && !dirs.querySelector(".spinner") && dirs.children.length > 0;
+    },
+    { timeout: 30000, message: "dossiers distants lus" },
+  );
+}
 
 test("SSH par mot de passe et 2FA", { skip }, async (t) => {
   await step(t, "mot de passe saisi dans le formulaire", async () => {
     await fillHost({ label: "Mot de passe", port: cfg.passwordPort, password: cfg.password });
     await connected();
     // La connexion est réutilisée : la navigation ne redemande rien.
-    await d.waitFor(() => document.querySelectorAll("#ssh-dirs .ssh-dir").length > 0 || /Aucun sous-dossier/.test(document.querySelector("#ssh-dirs").innerText), {
-      message: "dossiers distants",
-    });
     assert.equal(await d.exec(() => document.querySelector("#ssh-prompt").open), false, "aucune invite");
   });
 
@@ -113,9 +131,7 @@ test("SSH par mot de passe et 2FA", { skip }, async (t) => {
       }, { message: "serveur « Mot de passe » dans la liste" });
       await d.waitText("#ssh-title", "Mot de passe");
       await d.waitText("#ssh-password-status", "Mot de passe enregistré");
-      // Fin des connexions maîtresses : la prochaine connexion doit s'authentifier à nouveau.
-      const dir = `/tmp/md-ssh-${process.getuid()}`;
-      for (const f of readdirSync(dir)) rmSync(`${dir}/${f}`, { force: true });
+      dropMasters();
       await d.click("#ssh-test");
       await connected();
       assert.equal(await d.exec(() => document.querySelector("#ssh-prompt").open), false, "aucune invite");
@@ -125,7 +141,8 @@ test("SSH par mot de passe et 2FA", { skip }, async (t) => {
 
   await step(t, "mot de passe refusé puis corrigé", async () => {
     await d.click("#new-chat");
-    await fillHost({ label: "Mauvais mot de passe", host: "localhost", port: cfg.passwordPort, password: "incorrect" });
+    dropMasters();
+    await fillHost({ label: "Mauvais mot de passe", port: cfg.passwordPort, password: "incorrect" });
     await d.waitVisible("#ssh-prompt-retry", 30000);
     await answerPrompt(/password/i, cfg.password);
     await connected();
@@ -140,7 +157,8 @@ test("SSH par mot de passe et 2FA", { skip }, async (t) => {
   });
 
   await step(t, "invite annulée", async () => {
-    await fillHost({ label: "Annulation", host: "localhost", port: cfg.twoFaPort });
+    dropMasters();
+    await fillHost({ label: "Annulation", port: cfg.twoFaPort });
     await d.waitFor(() => document.querySelector("#ssh-prompt").open, { timeout: 30000, message: "invite SSH" });
     await d.click("#ssh-prompt-cancel");
     await d.waitText("#ssh-result", "Authentification refusée", 30000);

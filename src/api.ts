@@ -312,7 +312,7 @@ export const api = {
   sshTest: (host: SshHost, password?: string) => invoke<SshTestResult>("ssh_test", { host, password: password || null }),
   sshSetPassword: (hostId: string, password: string | null) => invoke<void>("ssh_set_password", { hostId, password }),
   sshPromptAnswer: (id: string, answer: string | null, save: boolean) => invoke<void>("ssh_prompt_answer", { id, answer, save }),
-  sshTrust: (host: SshHost) => invoke<void>("ssh_trust", { host }),
+  sshTrust: (host: SshHost, password?: string) => invoke<void>("ssh_trust", { host, password: password || null }),
   sshListDirs: (hostId: string, path: string) => invoke<{ path: string; dirs: string[] }>("ssh_list_dirs", { hostId, path }),
   sshOpenWorkspace: (hostId: string, path: string) => invoke<string>("ssh_open_workspace", { hostId, path }),
 

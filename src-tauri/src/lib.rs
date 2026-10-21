@@ -459,7 +459,9 @@ async fn ssh_test(app: AppHandle, mut host: ssh::SshHost, password: Option<Strin
 }
 
 #[tauri::command]
-async fn ssh_trust(host: ssh::SshHost) -> CmdResult<()> {
+async fn ssh_trust(mut host: ssh::SshHost, password: Option<String>) -> CmdResult<()> {
+    // Rebond ou ssh-keyscan impossible : la clé est enregistrée par une connexion, qui s'authentifie.
+    host.secret = password.filter(|p| !p.is_empty());
     ssh::trust(&host).await
 }
 

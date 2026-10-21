@@ -1,8 +1,10 @@
 //! Connexions SSH via le client OpenSSH du système : ~/.ssh/config, alias,
 //! ProxyJump, agent et clés fonctionnent comme dans un terminal.
 //!
-//! - `BatchMode=yes` : jamais d'invite interactive (mot de passe, phrase secrète) ;
-//!   l'authentification passe par l'agent SSH ou une clé sans phrase secrète.
+//! - Authentification par clé : `BatchMode=yes`, jamais d'invite ; l'agent SSH ou une clé
+//!   sans phrase secrète sont utilisés.
+//! - Authentification par mot de passe : les invites (mot de passe, code 2FA) passent par
+//!   l'application (voir `askpass`) ; une seule authentification par hôte grâce à ControlMaster.
 //! - Hôtes inconnus : l'empreinte est montrée à l'utilisateur avant toute confiance.
 //! - Sous macOS/Linux, les connexions sont réutilisées (ControlMaster).
 
@@ -36,6 +38,21 @@ pub struct SshHost {
     /// Dernier système détecté (`uname -srm`), pour informer le modèle.
     #[serde(default)]
     pub system: Option<String>,
+    /// `"password"` : mot de passe et codes 2FA demandés via l'application ; sinon clé ou agent.
+    #[serde(default)]
+    pub auth: Option<String>,
+    /// Un mot de passe est enregistré dans le trousseau (information pour l'interface).
+    #[serde(default)]
+    pub has_password: bool,
+    /// Mot de passe saisi pour un test de connexion : en mémoire seulement.
+    #[serde(skip)]
+    pub secret: Option<String>,
+}
+
+impl SshHost {
+    pub fn uses_password(&self) -> bool {
+        self.auth.as_deref() == Some("password")
+    }
 }
 
 pub struct Output {
@@ -117,8 +134,9 @@ fn control_dir() -> Option<PathBuf> {
 }
 
 fn common_args(h: &SshHost) -> Vec<String> {
+    let batch = if h.uses_password() { "BatchMode=no" } else { "BatchMode=yes" };
     let mut a: Vec<String> = [
-        "-o", "BatchMode=yes",
+        "-o", batch,
         "-o", "ConnectTimeout=15",
         "-o", "ServerAliveInterval=15",
         "-o", "ServerAliveCountMax=3",
@@ -152,21 +170,72 @@ fn base_command(h: &SshHost, extra: &[&str]) -> tokio::process::Command {
             "ControlPersist=600",
         ]);
     }
+    if h.uses_password() {
+        cmd.envs(crate::askpass::env_for(h));
+        // Les invites passent par l'application : jamais de confirmation d'hôte par ce biais
+        // (l'empreinte est montrée dans l'interface). Placé après `extra`, qui a la priorité.
+        cmd.args(["-o", "StrictHostKeyChecking=yes"]);
+    }
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
     cmd.kill_on_drop(true);
     cmd
 }
 
+/// Verrous par hôte : une seule authentification à la fois (une seule invite 2FA).
+#[cfg(unix)]
+static AUTH_LOCKS: std::sync::LazyLock<Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Hôte à mot de passe : établit la connexion maîtresse avant les commandes, pour ne
+/// s'authentifier qu'une fois (les commandes suivantes la réutilisent pendant 10 min).
+/// Renvoie false si la réutilisation n'est pas possible (Windows).
+async fn ensure_master(h: &SshHost) -> R<bool> {
+    #[cfg(unix)]
+    {
+        if control_dir().is_none() {
+            return Ok(false);
+        }
+        let lock = AUTH_LOCKS.lock().unwrap().entry(host_key(h)).or_default().clone();
+        let _guard = lock.lock().await;
+        let mut check = base_command(h, &["-O", "check"]);
+        check.arg("--").arg(&h.host).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        if check.status().await.is_ok_and(|s| s.success()) {
+            return Ok(true);
+        }
+        let mut cmd = base_command(h, &[]);
+        cmd.arg("--").arg(&h.host).arg("true").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+        let out = tokio::time::timeout(AUTH_TIMEOUT, cmd.output())
+            .await
+            .map_err(|_| "Authentification SSH : délai dépassé".to_string())?
+            .map_err(|e| format!("Impossible de lancer ssh : {e}"))?;
+        if !out.status.success() {
+            let e = String::from_utf8_lossy(&out.stderr);
+            return Err(connection_error(&e, true).unwrap_or_else(|| format!("Échec de la connexion SSH : {}", e.trim())));
+        }
+        Ok(true)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = h;
+        Ok(false)
+    }
+}
+
+/// Temps laissé pour s'authentifier (saisie d'un mot de passe ou d'un code 2FA).
+const AUTH_TIMEOUT: Duration = Duration::from_secs(200);
+
 /// Traduit les erreurs de connexion d'OpenSSH en messages clairs.
-fn connection_error(stderr: &str) -> Option<String> {
+fn connection_error(stderr: &str, password: bool) -> Option<String> {
     let s = stderr.to_lowercase();
     let msg = if s.contains("host key verification failed") || s.contains("no matching host key") && s.contains("known_hosts") {
         "HOSTKEY: hôte inconnu ou clé d'hôte modifiée. Vérifiez l'empreinte avant de lui faire confiance."
     } else if s.contains("remote host identification has changed") {
         "ATTENTION : la clé de cet hôte a changé (attaque possible ou serveur réinstallé). Vérifiez puis corrigez ~/.ssh/known_hosts."
+    } else if s.contains("permission denied") && password {
+        "Authentification refusée : mot de passe ou code incorrect, ou saisie annulée."
     } else if s.contains("permission denied") {
-        "Authentification refusée : ajoutez votre clé à l'agent SSH (ssh-add) ou indiquez une clé sans phrase secrète. Les mots de passe ne sont pas pris en charge."
+        "Authentification refusée : ajoutez votre clé à l'agent SSH (ssh-add), indiquez une clé sans phrase secrète, ou choisissez l'authentification par mot de passe."
     } else if s.contains("could not resolve hostname") {
         "Nom d'hôte introuvable (DNS ou alias ~/.ssh/config)."
     } else if s.contains("connection refused") {
@@ -187,6 +256,11 @@ const PID_MARKER: &str = "__MDPID__";
 /// Si `cancel` se déclenche (ou au délai), le groupe de processus distant est tué.
 pub async fn exec(h: &SshHost, script: &str, stdin: Option<Vec<u8>>, timeout: Duration, cancel: Option<Arc<Notify>>) -> R<Output> {
     validate(h)?;
+    if h.uses_password() {
+        remember_hostname(h).await;
+    }
+    // Mot de passe sans connexion réutilisable (Windows) : chaque commande s'authentifie.
+    let timeout = if h.uses_password() && !ensure_master(h).await? { timeout + AUTH_TIMEOUT } else { timeout };
     // $$ est le PID du shell qui exécute le script, chef de session côté sshd :
     // il sert à tuer toute la commande en cas d'annulation.
     let remote = format!("exec sh -c {}", quote(&format!("echo {PID_MARKER}$$ >&2\n{script}")));
@@ -276,7 +350,7 @@ pub async fn exec(h: &SshHost, script: &str, stdin: Option<Vec<u8>>, timeout: Du
         .join("\n");
     // Code 255 sans que le script ait démarré : échec de connexion SSH.
     if status.code() == Some(255) && !marker_seen {
-        return Err(connection_error(&stderr).unwrap_or_else(|| format!("Échec de la connexion SSH : {}", stderr.trim())));
+        return Err(connection_error(&stderr, h.uses_password()).unwrap_or_else(|| format!("Échec de la connexion SSH : {}", stderr.trim())));
     }
     Ok(Output { code: status.code(), stdout, stderr })
 }
@@ -320,6 +394,28 @@ pub async fn test(h: &SshHost) -> TestResult {
             }
         }
         Err(e) => TestResult { error: Some(e), ..Default::default() },
+    }
+}
+
+/// Noms d'hôte effectifs déjà résolus (alias de ~/.ssh/config → `HostName`).
+static RESOLVED: std::sync::LazyLock<Mutex<std::collections::HashMap<String, String>>> = std::sync::LazyLock::new(Default::default);
+
+fn host_key(h: &SshHost) -> String {
+    format!("{}|{}|{:?}", h.host, h.user.as_deref().unwrap_or(""), h.port)
+}
+
+/// Nom d'hôte effectif connu de cet hôte (après `remember_hostname`).
+pub fn resolved_hostname(h: &SshHost) -> Option<String> {
+    RESOLVED.lock().unwrap().get(&host_key(h)).cloned()
+}
+
+/// Résout et mémorise le nom d'hôte effectif : les invites d'OpenSSH le mentionnent
+/// (« user@hôte's password: »), ce qui permet de ne répondre qu'au serveur attendu.
+async fn remember_hostname(h: &SshHost) {
+    if resolved_hostname(h).is_none() {
+        if let Ok((hostname, _)) = resolve(h).await {
+            RESOLVED.lock().unwrap().insert(host_key(h), hostname);
+        }
     }
 }
 
@@ -377,7 +473,7 @@ pub async fn trust(h: &SshHost) -> R<()> {
         let out = cmd.output().await.map_err(|e| e.to_string())?;
         if !out.status.success() {
             let e = String::from_utf8_lossy(&out.stderr);
-            return Err(connection_error(&e).unwrap_or_else(|| e.trim().to_string()));
+            return Err(connection_error(&e, h.uses_password()).unwrap_or_else(|| e.trim().to_string()));
         }
         return Ok(());
     }
@@ -456,8 +552,9 @@ mod tests {
 
     #[test]
     fn connection_errors_are_translated() {
-        assert!(connection_error("Host key verification failed.").unwrap().starts_with("HOSTKEY:"));
-        assert!(connection_error("user@h: Permission denied (publickey).").unwrap().contains("agent SSH"));
-        assert!(connection_error("ssh: Could not resolve hostname x").is_some());
+        assert!(connection_error("Host key verification failed.", false).unwrap().starts_with("HOSTKEY:"));
+        assert!(connection_error("user@h: Permission denied (publickey).", false).unwrap().contains("agent SSH"));
+        assert!(connection_error("user@h: Permission denied (password).", true).unwrap().contains("mot de passe"));
+        assert!(connection_error("ssh: Could not resolve hostname x", false).is_some());
     }
 }

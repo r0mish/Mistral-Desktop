@@ -446,7 +446,7 @@ mod tests {
 
     #[test]
     fn system_access_paths() {
-        let h = SshHost { id: "h".into(), label: "h".into(), host: "h".into(), port: None, user: None, identity_file: None, system: None };
+        let h = SshHost { id: "h".into(), label: "h".into(), host: "h".into(), ..Default::default() };
         let t = Target::Remote { host: h, root: "/srv/app".into() };
         assert!(t.contains("src/main.rs") && !t.contains("/etc/fail2ban/jail.local") && !t.contains("../x"));
         assert_eq!(t.absolute("/etc/fail2ban/jail.local"), "/etc/fail2ban/jail.local");
@@ -494,7 +494,7 @@ mod ssh_integration {
             port: std::env::var("MD_SSH_TEST_PORT").ok().and_then(|p| p.parse().ok()),
             user: std::env::var("MD_SSH_TEST_USER").ok(),
             identity_file: std::env::var("MD_SSH_TEST_KEY").ok(),
-            system: None,
+            ..Default::default()
         })
     }
 

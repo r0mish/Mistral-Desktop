@@ -230,6 +230,22 @@ export interface SshHost {
   user?: string | null;
   identityFile?: string | null;
   system?: string | null;
+  /** "password" : mot de passe et codes 2FA demandés via l'application ; sinon clé ou agent SSH. */
+  auth?: "key" | "password" | null;
+  /** Mot de passe enregistré dans le trousseau (lecture seule). */
+  hasPassword?: boolean;
+}
+
+/** Invite d'authentification SSH relayée par l'application (événement `ssh-prompt`). */
+export interface SshPrompt {
+  id: string;
+  hostId: string;
+  host: string;
+  prompt: string;
+  /** Invite de mot de passe (enregistrable), sinon code 2FA, phrase secrète… */
+  password: boolean;
+  /** Le mot de passe précédent a été refusé. */
+  retry: boolean;
 }
 
 export interface SshTestResult {
@@ -293,7 +309,9 @@ export const api = {
   sshHosts: () => invoke<SshHost[]>("ssh_hosts"),
   sshSaveHost: (host: SshHost) => invoke<SshHost>("ssh_save_host", { host }),
   sshDeleteHost: (id: string) => invoke<void>("ssh_delete_host", { id }),
-  sshTest: (host: SshHost) => invoke<SshTestResult>("ssh_test", { host }),
+  sshTest: (host: SshHost, password?: string) => invoke<SshTestResult>("ssh_test", { host, password: password || null }),
+  sshSetPassword: (hostId: string, password: string | null) => invoke<void>("ssh_set_password", { hostId, password }),
+  sshPromptAnswer: (id: string, answer: string | null, save: boolean) => invoke<void>("ssh_prompt_answer", { id, answer, save }),
   sshTrust: (host: SshHost) => invoke<void>("ssh_trust", { host }),
   sshListDirs: (hostId: string, path: string) => invoke<{ path: string; dirs: string[] }>("ssh_list_dirs", { hostId, path }),
   sshOpenWorkspace: (hostId: string, path: string) => invoke<string>("ssh_open_workspace", { hostId, path }),

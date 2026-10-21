@@ -645,7 +645,7 @@ async fn check_update() -> CmdResult<updates::UpdateInfo> {
 
 /// Clé publique de signature des mises à jour, fournie au moment de la compilation (CI).
 fn updater_pubkey() -> Option<&'static str> {
-    option_env!("TAURI_UPDATER_PUBKEY").filter(|k| !k.trim().is_empty())
+    option_env!("TAURI_UPDATER_PUBKEY").map(str::trim).filter(|k| !k.is_empty())
 }
 
 /// Installation automatique possible ? (build signé ; sous Linux, seulement l'AppImage :

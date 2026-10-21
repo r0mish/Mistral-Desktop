@@ -44,6 +44,13 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         with:
           script: |
+            // Brouillons laissés par une release précédente en échec pour la même version.
+            const tag = `v${process.env.VERSION}`;
+            const existing = await github.rest.repos.listReleases({ owner: context.repo.owner, repo: context.repo.repo, per_page: 50 });
+            for (const r of existing.data.filter((r) => r.draft && r.tag_name === tag)) {
+              await github.rest.repos.deleteRelease({ owner: context.repo.owner, repo: context.repo.repo, release_id: r.id });
+              core.notice(`Brouillon ${tag} précédent supprimé (${r.id}).`);
+            }
             const { data } = await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -119,9 +126,12 @@ jobs:
         shell: bash
         env:
           HAS_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' && vars.TAURI_UPDATER_PUBKEY != '' }}
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
         run: |
           if [ "$HAS_KEY" = "true" ]; then
-            echo "args=--config '{\"bundle\":{\"createUpdaterArtifacts\":true}}'" >> "$GITHUB_OUTPUT"
+            # La CLI vérifie chaque signature avec la clé publique de la configuration : on la fournit ici.
+            CONFIG=$(node -e 'process.stdout.write(JSON.stringify({bundle:{createUpdaterArtifacts:true},plugins:{updater:{pubkey:process.env.PUBKEY.trim()}}}))')
+            echo "args=--config '$CONFIG'" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::Clé de signature absente : mises à jour à installer manuellement."
           fi

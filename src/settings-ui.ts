@@ -8,7 +8,8 @@ import { applyTheme, copy, fillModelSelect, loadModels, toast } from "./ui";
 import { refreshConvs, renderSidebar } from "./sidebar";
 import { renderChrome } from "./chrome";
 import { renderWelcome } from "./thread";
-import { renderPersonalTab } from "./personal-ui";
+import { loadPersonal, renderPersonalTab } from "./personal-ui";
+import type { BackupReport } from "./api";
 
 // ---------------------------------------------------------------- réglages
 
@@ -252,6 +253,8 @@ s.vaultKeyAction.addEventListener("click", async () => {
   try {
     await api.vaultImportKey(s.vaultKey.value);
     s.vaultKeyRow.hidden = true;
+  bk.pass.value = bk.pass2.value = "";
+  bk.status.textContent = "";
     toast("Clé restaurée");
     await refreshConvs();
     await loadProjects();
@@ -342,6 +345,63 @@ $("#delete-key").addEventListener("click", async () => {
   await refreshKeyStatus();
   if (!state.current) renderWelcome();
 });
+
+// ---------------------------------------------------------------- sauvegarde
+
+const bk = {
+  pass: $<HTMLInputElement>("#bk-pass"),
+  pass2: $<HTMLInputElement>("#bk-pass2"),
+  exp: $<HTMLButtonElement>("#bk-export"),
+  imp: $<HTMLButtonElement>("#bk-import"),
+  status: $("#bk-status"),
+};
+
+const reportText = (r: BackupReport) =>
+  [
+    `${r.conversations} conversation${r.conversations > 1 ? "s" : ""}`,
+    `${r.projects} projet${r.projects > 1 ? "s" : ""}`,
+    `${r.memories} souvenir${r.memories > 1 ? "s" : ""}`,
+    `${r.assistants} assistant${r.assistants > 1 ? "s" : ""}`,
+    `${r.sshHosts} serveur${r.sshHosts > 1 ? "s" : ""} SSH`,
+    r.mcp ? "configuration MCP" : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+async function backupAction(kind: "export" | "import") {
+  const pass = bk.pass.value;
+  if (pass.length < 12) return toast("Phrase de passe : 12 caractères minimum.", true);
+  if (kind === "export" && pass !== bk.pass2.value) return toast("Les deux phrases de passe ne correspondent pas.", true);
+  bk.exp.disabled = bk.imp.disabled = true;
+  bk.status.textContent = kind === "export" ? "Chiffrement…" : "Déchiffrement…";
+  try {
+    const r = kind === "export" ? await api.backupExport(pass) : await api.backupImport(pass);
+    if (!r) {
+      bk.status.textContent = "";
+      return;
+    }
+    if (kind === "export") {
+      bk.status.textContent = `Exporté : ${reportText(r)}`;
+      toast("Sauvegarde chiffrée enregistrée");
+    } else {
+      bk.status.textContent = `Restauré : ${reportText(r)}`;
+      toast("Sauvegarde restaurée");
+      await refreshConvs();
+      await loadProjects();
+      await loadPersonal();
+      renderPersonalTab();
+      renderSidebar();
+    }
+    bk.pass.value = bk.pass2.value = "";
+  } catch (e) {
+    bk.status.textContent = "";
+    toast(errMsg(e), true);
+  } finally {
+    bk.exp.disabled = bk.imp.disabled = false;
+  }
+}
+bk.exp.addEventListener("click", () => backupAction("export"));
+bk.imp.addEventListener("click", () => backupAction("import"));
 
 s.tray.addEventListener("change", () => (s.closeTray.disabled = !s.tray.checked));
 $("#s-shortcut-suggest").addEventListener("click", () => {

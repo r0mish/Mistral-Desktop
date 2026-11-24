@@ -1,5 +1,6 @@
 mod askpass;
 mod audio;
+mod backup;
 mod desktop;
 mod git;
 mod mcp;
@@ -415,6 +416,18 @@ async fn dictation_stop(app: AppHandle, dictation: State<'_, Dictation>, transcr
         }
         Err(e) => Err(e),
     }
+}
+
+// ------------------------------------------------------------------ sauvegarde
+
+#[tauri::command]
+async fn backup_export(app: AppHandle, passphrase: String) -> CmdResult<Option<backup::Report>> {
+    backup::export(&app, &passphrase).await
+}
+
+#[tauri::command]
+async fn backup_import(app: AppHandle, passphrase: String) -> CmdResult<Option<backup::Report>> {
+    backup::import(&app, &passphrase).await
 }
 
 // ------------------------------------------------------------------ mémoire et assistants
@@ -881,6 +894,8 @@ pub fn run() {
             dictation_start,
             dictation_stop,
             speak,
+            backup_export,
+            backup_import,
             list_memories,
             save_memories,
             list_assistants,

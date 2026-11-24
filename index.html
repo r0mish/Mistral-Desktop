@@ -239,6 +239,20 @@
           </fieldset>
 
           <fieldset>
+            <legend>Sauvegarde et restauration</legend>
+            <p class="muted small">Un seul fichier <code>.mdbackup</code> chiffré par votre phrase de passe (Argon2id + XChaCha20-Poly1305) : conversations, projets, mémoire, assistants, serveurs SSH (sans les mots de passe du trousseau) et configuration MCP. Lisible sur un autre appareil avec la seule phrase de passe ; à synchroniser vous-même (Syncthing, Nextcloud, clé USB…). La restauration fusionne : rien n'est supprimé, la version la plus récente de chaque conversation l'emporte.</p>
+            <div class="grid2">
+              <label>Phrase de passe <input id="bk-pass" type="password" autocomplete="new-password" placeholder="12 caractères minimum" /></label>
+              <label>Confirmation (export) <input id="bk-pass2" type="password" autocomplete="new-password" /></label>
+            </div>
+            <div class="row">
+              <button type="button" id="bk-export" class="btn-primary sm">Exporter une sauvegarde…</button>
+              <button type="button" id="bk-import" class="btn-ghost sm">Restaurer une sauvegarde…</button>
+              <span class="muted small" id="bk-status"></span>
+            </div>
+          </fieldset>
+
+          <fieldset>
             <legend>Mises à jour</legend>
             <label class="check"><input id="s-updates" type="checkbox" /> Vérifier au démarrage si une nouvelle version est publiée sur GitHub</label>
             <div class="row">

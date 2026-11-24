@@ -147,6 +147,8 @@ Configuration au **format de Claude Desktop** (Réglages → MCP) :
 | MCP | `mcp.json` est stocké en clair dans le dossier de configuration : évitez d'y mettre des secrets sensibles, ou préférez des serveurs locaux. |
 | Auto-hébergement | URL d'API configurable : compatible avec un serveur OpenAI-like (vLLM, Ollama, llama.cpp…) servant les modèles open-weight de Mistral. HTTP en clair accepté seulement sur `localhost`. La recherche web via Mistral et l'OCR nécessitent l'API Mistral ; utilisez SearXNG, l'extraction PDF locale et un serveur de transcription local pour un fonctionnement 100 % local. |
 
+**Sauvegarde** (Réglages → Général) : un fichier `.mdbackup` chiffré par phrase de passe (Argon2id + XChaCha20-Poly1305, indépendant du trousseau) contenant conversations, projets, mémoire, assistants, serveurs SSH (sans mots de passe) et configuration MCP. La restauration fusionne avec les données présentes sans rien supprimer.
+
 Emplacements locaux :
 
 | OS | Données (conversations, dossiers autorisés) | Réglages (`settings.json`, `mcp.json`) |

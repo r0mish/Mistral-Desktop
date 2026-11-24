@@ -136,6 +136,15 @@ export interface Conversation {
   temperature?: number | null;
 }
 
+export interface BackupReport {
+  conversations: number;
+  projects: number;
+  memories: number;
+  assistants: number;
+  sshHosts: number;
+  mcp: boolean;
+}
+
 export interface Memory {
   id: string;
   text: string;
@@ -381,6 +390,8 @@ export const api = {
     channel.onmessage = onLevel;
     return invoke<void>("dictation_start", { onLevel: channel });
   },
+  backupExport: (passphrase: string) => invoke<BackupReport | null>("backup_export", { passphrase }),
+  backupImport: (passphrase: string) => invoke<BackupReport | null>("backup_import", { passphrase }),
   listMemories: () => invoke<Memory[]>("list_memories"),
   saveMemories: (items: Memory[]) => invoke<void>("save_memories", { items }),
   listAssistants: () => invoke<Assistant[]>("list_assistants"),

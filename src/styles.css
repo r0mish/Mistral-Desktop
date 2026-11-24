@@ -759,3 +759,12 @@ table.usage th { color: var(--muted); font-weight: 500; }
 /* Lecture à voix haute */
 .icon-btn.speaking { color: var(--accent); animation: speak-pulse 1.2s ease-in-out infinite; }
 @keyframes speak-pulse { 50% { opacity: 0.45; } }
+
+/* Mémoire et assistants */
+.mem-item, .as-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; }
+.mem-item span { flex: 1; font-size: 13px; }
+.mem-item small, .as-item small { color: var(--muted); font-size: 11.5px; }
+.as-item > div { flex: 1; display: flex; flex-direction: column; }
+.as-form { border: 1px dashed var(--border); border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+.assistant-chip { font-size: 12px; white-space: nowrap; }
+#assistant-select.on { color: var(--accent); }

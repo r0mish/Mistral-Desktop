@@ -16,6 +16,7 @@ import { openSettings, pollMcp, refreshKeyStatus } from "./settings-ui";
 import { initUpdates } from "./updates-ui";
 import "./attachments";
 import { stopSpeech } from "./speech";
+import { initPersonalUi, loadPersonal } from "./personal-ui";
 
 $("#open-settings").addEventListener("click", () => openSettings());
 $("#new-chat").addEventListener("click", () => newChat());
@@ -87,6 +88,8 @@ async function init() {
   state.workspaces = await api.listWorkspaces().catch(() => []);
   await loadHosts();
   await loadProjects();
+  await loadPersonal();
+  initPersonalUi({ openSettings: (tab) => openSettings(tab) });
   initSshUi({ onOpen: openRemoteWorkspace, toast });
   initProjectsUi({
     onChange: onProjectChange,

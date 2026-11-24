@@ -58,6 +58,8 @@ pub struct Settings {
     pub transcription_url: String,
     /// Termes à favoriser par la transcription (un par ligne ou séparés par des virgules).
     pub transcription_vocabulary: String,
+    /// Mémoire persistante : faits retenus joints aux conversations, outil `remember` pour le modèle.
+    pub memory_enabled: bool,
     /// Lecture à voix haute (Voxtral TTS) : modèle, voix et vitesse de lecture locale.
     pub tts_model: String,
     pub tts_voice: String,
@@ -147,6 +149,7 @@ impl Default for Settings {
             transcription_language: "fr".into(),
             transcription_url: String::new(),
             transcription_vocabulary: String::new(),
+            memory_enabled: false,
             tts_model: crate::mistral::TTS_MODEL.into(),
             tts_voice: crate::mistral::TTS_VOICE.into(),
             tts_speed: 1.0,
@@ -271,9 +274,10 @@ fn secret_files(app: &AppHandle) -> R<Vec<PathBuf>> {
             }
         }
     }
-    let mcp = mcp_path(app)?;
-    if mcp.exists() {
-        out.push(mcp);
+    for p in [mcp_path(app)?, memory_path(app)?, assistants_path(app)?] {
+        if p.exists() {
+            out.push(p);
+        }
     }
     Ok(out)
 }
@@ -583,6 +587,90 @@ pub fn load_ssh_hosts(app: &AppHandle) -> Vec<crate::ssh::SshHost> {
 
 pub fn save_ssh_hosts(app: &AppHandle, hosts: &[crate::ssh::SshHost]) -> R<()> {
     write_json(&ssh_hosts_path(app)?, &hosts)
+}
+
+// ------------------------------------------------------------------ mémoire et assistants
+
+/// Taille max d'un souvenir et nombre max de souvenirs (tout est joint à chaque requête).
+pub const MAX_MEMORY_CHARS: usize = 500;
+pub const MAX_MEMORIES: usize = 200;
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Memory {
+    pub id: String,
+    pub text: String,
+    pub created_at: i64,
+}
+
+fn memory_path(app: &AppHandle) -> R<PathBuf> {
+    Ok(data_dir(app)?.join("memory.json"))
+}
+
+pub fn load_memories(app: &AppHandle) -> R<Vec<Memory>> {
+    let p = memory_path(app)?;
+    if !p.exists() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_slice(&read_secret(&p)?).map_err(|e| e.to_string())
+}
+
+pub fn save_memories(app: &AppHandle, items: &[Memory]) -> R<()> {
+    if items.len() > MAX_MEMORIES {
+        return Err(format!("Mémoire pleine ({MAX_MEMORIES} éléments max) : supprimez-en dans Réglages → Personnalisation."));
+    }
+    if items.iter().any(|m| m.text.trim().is_empty() || m.text.chars().count() > MAX_MEMORY_CHARS) {
+        return Err(format!("Chaque élément de mémoire doit faire entre 1 et {MAX_MEMORY_CHARS} caractères."));
+    }
+    write_secret_json(&memory_path(app)?, &items)
+}
+
+/// Ajoute un souvenir (outil `remember`), sans doublon.
+pub fn add_memory(app: &AppHandle, text: &str) -> R<String> {
+    let text = text.trim();
+    let mut items = load_memories(app)?;
+    if items.iter().any(|m| m.text.eq_ignore_ascii_case(text)) {
+        return Ok("Déjà en mémoire.".into());
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+    items.push(Memory { id: uuid::Uuid::new_v4().to_string(), text: text.to_owned(), created_at: now });
+    save_memories(app, &items)?;
+    Ok(format!("Mémorisé : {text}"))
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Assistant {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub instructions: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+}
+
+fn assistants_path(app: &AppHandle) -> R<PathBuf> {
+    Ok(data_dir(app)?.join("assistants.json"))
+}
+
+pub fn load_assistants(app: &AppHandle) -> R<Vec<Assistant>> {
+    let p = assistants_path(app)?;
+    if !p.exists() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_slice(&read_secret(&p)?).map_err(|e| e.to_string())
+}
+
+pub fn save_assistants(app: &AppHandle, items: &[Assistant]) -> R<()> {
+    for a in items {
+        check_id(&a.id)?;
+        if a.name.trim().is_empty() {
+            return Err("Donnez un nom à l'assistant.".into());
+        }
+    }
+    write_secret_json(&assistants_path(app)?, &items)
 }
 
 fn mcp_path(app: &AppHandle) -> R<PathBuf> {

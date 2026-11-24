@@ -1,5 +1,5 @@
 // État partagé de l'interface : éléments du DOM, conversation ouverte, brouillon et options effectives.
-import type { ConversationSummary, Conversation, InstructionFile, Kind, McpServerStatus, ModelInfo, PermissionMode, ProjectContext, Risk, Settings, TextFile, ToolContext, UpdateInfo } from "./api";
+import type { Assistant, Memory, ConversationSummary, Conversation, InstructionFile, Kind, McpServerStatus, ModelInfo, PermissionMode, ProjectContext, Risk, Settings, TextFile, ToolContext, UpdateInfo } from "./api";
 import { systemPrompt, type Platform } from "./agent";
 import { parseRemote } from "./ssh-ui";
 import { findProject, projectChars } from "./projects-ui";
@@ -16,6 +16,8 @@ export const el = {
   permSelect: $<HTMLSelectElement>("#perm-select"),
   modelSelect: $<HTMLSelectElement>("#model-select"),
   exportBtn: $<HTMLButtonElement>("#export-btn"),
+  assistantSelect: $<HTMLSelectElement>("#assistant-select"),
+  assistantChip: $("#assistant-chip"),
   tempBadge: $("#temp-badge"),
   tempToggle: $<HTMLButtonElement>("#temp-toggle"),
   disclaimer: $("#disclaimer"),
@@ -75,6 +77,7 @@ export interface Draft {
   systemAccess?: boolean;
   projectId?: string;
   temporary?: boolean;
+  assistantId?: string;
 }
 
 export const state = {
@@ -105,7 +108,12 @@ export const state = {
   search: { query: "", hits: new Map<string, string | null>() },
   /** Fichiers de référence préparés pour la dernière question, par conversation. */
   projectCtx: new Map<string, ProjectContext>(),
+  memories: [] as Memory[],
+  assistants: [] as Assistant[],
 };
+
+/** Mémoire persistante active pour cette conversation ? (jamais dans une conversation temporaire) */
+export const memoryOn = (c: Conversation) => !!state.settings.memoryEnabled && !c.temporary;
 
 export const uid = () => crypto.randomUUID();
 
@@ -140,6 +148,7 @@ export const sysPrompt = (conv: Conversation) =>
     instructions: conv.kind === "code" && conv.workspace ? state.instructions.get(conv.workspace) : undefined,
     project: findProject(conv.projectId),
     projectFiles: projectFilesFor(conv),
+    memories: memoryOn(conv) ? state.memories.map((m) => m.text) : undefined,
   });
 
 export const errMsg = (e: unknown) => (typeof e === "string" ? e : e instanceof Error ? e.message : JSON.stringify(e));
@@ -165,6 +174,7 @@ export const opts = () => {
     permissionMode: (c ? c.permissionMode : state.draft.permissionMode) ?? "ask",
     projectId: c ? c.projectId : state.draft.projectId,
     temporary: !!(c ? c.temporary : state.draft.temporary),
+    assistantId: c ? c.assistantId : state.draft.assistantId,
   };
 };
 
@@ -174,6 +184,7 @@ export const toolCtx = (c: Conversation): ToolContext => ({
   mcp: c.mcp !== false,
   system: c.kind === "code" && !!c.systemAccess,
   project: c.projectId && state.projectCtx.get(c.id)?.mode === "excerpts" ? c.projectId : undefined,
+  memory: memoryOn(c),
 });
 
 export const maxContext = (model: string) => state.models.find((m) => m.id === model)?.maxContextLength ?? null;

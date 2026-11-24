@@ -51,6 +51,16 @@ export interface PromptExtras {
   project?: Project | null;
   /** Fichiers de référence préparés (extraits pertinents pour les gros projets). */
   projectFiles?: string;
+  /** Mémoire persistante de l'utilisateur (absente : désactivée ou conversation temporaire). */
+  memories?: string[];
+}
+
+export function memoryPrompt(items: string[]): string {
+  return (
+    "Mémoire persistante : faits que l'utilisateur t'a demandé de retenir lors de conversations précédentes. Tiens-en compte quand c'est pertinent, sans les répéter inutilement. " +
+    "Tu peux enregistrer un nouveau fait durable avec l'outil remember." +
+    (items.length ? `\n${items.map((t) => `- ${t}`).join("\n")}` : "\n(aucun fait enregistré pour l'instant)")
+  );
 }
 
 export function instructionsPrompt(files: InstructionFile[]): string {
@@ -86,6 +96,7 @@ export function systemPrompt(conv: Conversation, settings: Settings, platform: P
   if (extras.project) parts.push(projectPrompt(extras.project, extras.projectFiles));
   const user = (conv.systemPrompt ?? settings.systemPrompt)?.trim();
   if (user) parts.push(user);
+  if (extras.memories) parts.push(memoryPrompt(extras.memories));
   if (conv.webSearch) parts.push(WEB_PROMPT());
   return parts.join("\n\n");
 }
@@ -234,6 +245,8 @@ export function toolTitle(tc: ToolCallRec): { icon: string; html: string } {
       return { icon: ICONS.edit, html: `Écriture ${code(str(a.path))}` };
     case "edit_file":
       return { icon: ICONS.edit, html: `Modification ${code(str(a.path))}` };
+    case "remember":
+      return { icon: ICONS.edit, html: `Mémorisation ${code(str(a.fact), 200)}` };
     case "run_command":
       return { icon: ICONS.term, html: code(`$ ${str(a.command)}`, 200) };
     default: {

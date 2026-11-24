@@ -8,6 +8,7 @@ import { applyTheme, copy, fillModelSelect, loadModels, toast } from "./ui";
 import { refreshConvs, renderSidebar } from "./sidebar";
 import { renderChrome } from "./chrome";
 import { renderWelcome } from "./thread";
+import { renderPersonalTab } from "./personal-ui";
 
 // ---------------------------------------------------------------- réglages
 
@@ -56,6 +57,7 @@ const s = {
   ttsSpeed: $<HTMLSelectElement>("#s-tts-speed"),
   ttsModel: $<HTMLInputElement>("#s-tts-model"),
   ttsAuto: $<HTMLInputElement>("#s-tts-auto"),
+  memory: $<HTMLInputElement>("#s-memory"),
   encrypt: $<HTMLInputElement>("#s-encrypt"),
   vaultStatus: $("#vault-status"),
   vaultKeyRow: $("#vault-key-row"),
@@ -293,6 +295,8 @@ export async function openSettings(tab = "general") {
   if (!s.ttsSpeed.value) s.ttsSpeed.value = "1";
   s.ttsModel.value = st.ttsModel ?? "";
   s.ttsAuto.checked = !!st.ttsAuto;
+  s.memory.checked = !!st.memoryEnabled;
+  renderPersonalTab();
   s.encrypt.checked = st.encryptData !== false;
   s.vaultKeyRow.hidden = true;
   renderVaultStatus();
@@ -371,6 +375,7 @@ $("#settings-form").addEventListener("submit", async (e) => {
     ttsSpeed: Number(s.ttsSpeed.value) || 1,
     ttsModel: s.ttsModel.value.trim() || "voxtral-mini-tts-3-0",
     ttsAuto: s.ttsAuto.checked,
+    memoryEnabled: s.memory.checked,
     encryptData: s.encrypt.checked,
   };
   try {

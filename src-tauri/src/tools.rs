@@ -30,6 +30,22 @@ pub struct ToolContext {
     /// Projet dont les fichiers de référence sont trop gros pour être joints : outil de recherche.
     #[serde(default)]
     pub project: Option<String>,
+    /// Mémoire persistante active pour cette conversation : outil `remember`.
+    #[serde(default)]
+    pub memory: bool,
+}
+
+/// Texte à mémoriser (argument `fact` de l'outil `remember`), validé.
+pub fn remember_text(arguments: &str) -> R<String> {
+    let args = parse_args(arguments)?;
+    let fact = s(&args, "fact")?.trim().to_owned();
+    if fact.is_empty() {
+        return Err("Rien à mémoriser".into());
+    }
+    if fact.chars().count() > crate::storage::MAX_MEMORY_CHARS {
+        return Err(format!("Trop long : résume en moins de {} caractères", crate::storage::MAX_MEMORY_CHARS));
+    }
+    Ok(fact)
 }
 
 #[derive(Serialize)]
@@ -209,6 +225,17 @@ pub fn definitions(ctx: &ToolContext, mcp: &McpManager, shell: &crate::shell::Sh
                 "Recherche des passages dans les fichiers de référence du projet (recherche par mots-clés, locale). Formule des mots-clés précis ; relance avec d'autres termes si le résultat ne suffit pas.",
                 json!({ "query": { "type": "string", "description": "Mots-clés ou question" } }),
                 &["query"],
+            ),
+        });
+    }
+    if ctx.memory {
+        out.push(ToolDef {
+            risk: "read",
+            definition: func(
+                "remember",
+                "Enregistre dans la mémoire persistante de l'utilisateur (stockée chiffrée sur son appareil) un fait durable utile aux futures conversations : préférence, contexte professionnel, équipement, projet en cours. À utiliser quand l'utilisateur le demande (« retiens que… ») ou partage une information stable sur lui. Jamais de mot de passe, clé, donnée de santé ou information sensible. Une phrase courte et autonome par fait.",
+                json!({ "fact": { "type": "string", "description": "Le fait à retenir, en une phrase autonome (ex. « L’utilisateur administre un cluster Proxmox de 3 nœuds. »)" } }),
+                &["fact"],
             ),
         });
     }

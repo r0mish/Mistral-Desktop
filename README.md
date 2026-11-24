@@ -25,6 +25,11 @@ Comme dans Claude Desktop : des conversations regroupées qui partagent des **co
 - Consignes et fichiers sont ajoutés à l'invite système de chaque message du projet (estimation du nombre de tokens affichée) ; tout est stocké localement dans `projects/`
 - **Gros projets** (au-delà de 60 000 caractères, jusqu'à 10 millions) : recherche locale BM25 par extraits. Seuls les passages pertinents pour la question sont envoyés (≈ 4 k tokens par message), et le modèle dispose d'un outil `search_project_files` pour chercher d'autres passages. Aucun index ni embedding ne quitte la machine
 
+### Mémoire et assistants
+Réglages → **Personnalisation** :
+- **Mémoire persistante** (désactivée par défaut) : des faits durables (« je travaille sous Debian 13 », « réponses concises ») joints à chaque conversation. Ajout à la main ou par le modèle avec l'outil `remember` quand vous lui dites « retiens que… ». Stockée uniquement sur l'appareil, **chiffrée** avec les conversations, jamais utilisée dans une conversation temporaire
+- **Assistants** : préréglages réutilisables (consignes, modèle, température), choisis dans le menu à côté du modèle pour une nouvelle conversation du Chat. Plus légers qu'un projet
+
 ### Dictée vocale
 Bouton micro dans la zone de saisie (`Ctrl/⌘+Maj+D`, `Échap` pour annuler) : capture native du micro, transcription par **Voxtral 3** (`voxtral-mini-transcribe-3-0` par défaut, ou `voxtral-small-transcribe-3-0`, plus précis), texte inséré au curseur.
 - Si le modèle est refusé par l'API, repli automatique sur Voxtral 2 (`voxtral-mini-latest`), avec un message

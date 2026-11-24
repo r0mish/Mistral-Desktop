@@ -10,6 +10,7 @@ import { copy, icons, toast } from "./ui";
 import { newChat, projectOptions } from "./sidebar";
 import { renderConversation, renderWelcome } from "./thread";
 import { renderActivity, renderUsage, saveCurrent } from "./run";
+import { renderAssistantPicker } from "./personal-ui";
 
 // ---------------------------------------------------------------- options de la conversation
 
@@ -32,6 +33,7 @@ export function renderChrome() {
   const o = opts();
   el.title.textContent = c?.title ?? (o.kind === "code" ? "Nouvelle session de code" : "Nouvelle conversation");
   el.exportBtn.hidden = !c || !!c.temporary;
+  renderAssistantPicker();
   el.tempBadge.hidden = !o.temporary;
   // La bascule ne s'utilise qu'avant le premier message : une conversation ne change pas de nature.
   el.tempToggle.hidden = !!c && !c.temporary;

@@ -67,6 +67,8 @@
             <option value="auto">Autonome</option>
           </select>
           <select id="conv-project" title="Projet de la conversation" hidden></select>
+          <select id="assistant-select" title="Assistant : consignes, modèle et température préenregistrés" hidden></select>
+          <span id="assistant-chip" class="chip assistant-chip" hidden></span>
           <select id="model-select" title="Modèle"></select>
           <button id="export-btn" class="icon-btn" title="Exporter en Markdown" hidden>
             <svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14" /></svg>
@@ -158,6 +160,7 @@
           <nav class="settings-tabs">
             <button type="button" data-tab="general" class="active">Général</button>
             <button type="button" data-tab="tools">Outils</button>
+            <button type="button" data-tab="personal">Personnalisation</button>
             <button type="button" data-tab="mcp">MCP</button>
             <button type="button" data-tab="code">Code</button>
             <button type="button" data-tab="usage">Utilisation</button>
@@ -330,6 +333,40 @@
                 <option value="ocr">Toujours OCR Mistral (meilleure qualité : tableaux, scans)</option>
               </select>
             </label>
+          </fieldset>
+        </div>
+
+        <div class="tab" data-tab="personal" hidden>
+          <fieldset>
+            <legend>Mémoire</legend>
+            <label class="check"><input id="s-memory" type="checkbox" /> Activer la mémoire persistante</label>
+            <p class="muted small">Les faits retenus sont joints à chaque conversation (sauf les conversations temporaires), et le modèle peut en ajouter avec l'outil <code>remember</code> quand vous le lui demandez (« retiens que… »). Stockés uniquement sur cet appareil, chiffrés avec vos conversations. Évitez d'y mettre des secrets.</p>
+            <div id="mem-list"></div>
+            <div class="row">
+              <input id="mem-input" maxlength="500" placeholder="Ex. : Je travaille sous Debian 13 et préfère les réponses concises." />
+              <button type="button" id="mem-add" class="btn-primary sm">Ajouter</button>
+            </div>
+            <div class="row end"><button type="button" id="mem-clear" class="btn-ghost sm danger" hidden>Tout oublier</button></div>
+          </fieldset>
+          <fieldset>
+            <legend>Assistants</legend>
+            <p class="muted small">Préréglages pour les nouvelles conversations du Chat (menu à côté du modèle) : consignes, modèle et température.</p>
+            <div id="as-list"></div>
+            <div id="as-form" class="as-form" hidden>
+              <div class="grid2">
+                <label>Nom <input id="as-name" maxlength="60" placeholder="Ex. : Traducteur technique" /></label>
+                <label>Modèle <select id="as-model"></select></label>
+              </div>
+              <label>Température <input id="as-temp" type="number" min="0" max="1.5" step="0.1" placeholder="réglage général" /></label>
+              <label>Consignes
+                <textarea id="as-instructions" rows="5" placeholder="Ex. : Tu traduis en anglais technique les textes que je te donne, sans commentaire."></textarea>
+              </label>
+              <div class="row end">
+                <button type="button" id="as-cancel" class="btn-ghost sm">Annuler</button>
+                <button type="button" id="as-save" class="btn-primary sm">Enregistrer l'assistant</button>
+              </div>
+            </div>
+            <button type="button" id="as-new" class="btn-ghost sm">+ Nouvel assistant</button>
           </fieldset>
         </div>
 

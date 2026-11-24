@@ -36,6 +36,8 @@ export interface Settings {
   transcriptionUrl: string;
   /** Termes à favoriser (un par ligne ou séparés par des virgules). */
   transcriptionVocabulary: string;
+  /** Mémoire persistante jointe aux conversations (outil `remember`). */
+  memoryEnabled: boolean;
   /** Lecture à voix haute (Voxtral TTS). */
   ttsModel: string;
   ttsVoice: string;
@@ -123,6 +125,25 @@ export interface Conversation {
   projectId?: string;
   /** Conversation temporaire : jamais écrite sur le disque, perdue en la quittant. */
   temporary?: boolean;
+  /** Assistant utilisé à la création (consignes et modèle copiés dans la conversation). */
+  assistantId?: string;
+  /** Température propre à la conversation (assistant) ; sinon celle des réglages. */
+  temperature?: number | null;
+}
+
+export interface Memory {
+  id: string;
+  text: string;
+  createdAt: number;
+}
+
+export interface Assistant {
+  id: string;
+  name: string;
+  instructions: string;
+  /** Vide = modèle par défaut. */
+  model: string;
+  temperature: number | null;
 }
 
 export interface ConversationSummary {
@@ -201,6 +222,8 @@ export interface ToolContext {
   system?: boolean;
   /** Projet volumineux : outil search_project_files. */
   project?: string;
+  /** Mémoire persistante : outil remember. */
+  memory?: boolean;
 }
 
 export type Risk = "read" | "write" | "exec" | "mcp";
@@ -353,6 +376,10 @@ export const api = {
     channel.onmessage = onLevel;
     return invoke<void>("dictation_start", { onLevel: channel });
   },
+  listMemories: () => invoke<Memory[]>("list_memories"),
+  saveMemories: (items: Memory[]) => invoke<void>("save_memories", { items }),
+  listAssistants: () => invoke<Assistant[]>("list_assistants"),
+  saveAssistants: (items: Assistant[]) => invoke<void>("save_assistants", { items }),
   speak: (text: string) => invoke<string>("speak", { text }),
   dictationStop: (transcribe: boolean) => invoke<{ text: string; note: string | null } | null>("dictation_stop", { transcribe }),
 

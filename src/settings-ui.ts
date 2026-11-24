@@ -52,6 +52,10 @@ const s = {
   sttLang: $<HTMLSelectElement>("#s-stt-lang"),
   sttUrl: $<HTMLInputElement>("#s-stt-url"),
   sttVocab: $<HTMLTextAreaElement>("#s-stt-vocab"),
+  ttsVoice: $<HTMLInputElement>("#s-tts-voice"),
+  ttsSpeed: $<HTMLSelectElement>("#s-tts-speed"),
+  ttsModel: $<HTMLInputElement>("#s-tts-model"),
+  ttsAuto: $<HTMLInputElement>("#s-tts-auto"),
   encrypt: $<HTMLInputElement>("#s-encrypt"),
   vaultStatus: $("#vault-status"),
   vaultKeyRow: $("#vault-key-row"),
@@ -284,6 +288,11 @@ export async function openSettings(tab = "general") {
   s.sttLang.value = st.transcriptionLanguage ?? "fr";
   s.sttUrl.value = st.transcriptionUrl ?? "";
   s.sttVocab.value = st.transcriptionVocabulary ?? "";
+  s.ttsVoice.value = st.ttsVoice ?? "";
+  s.ttsSpeed.value = String(st.ttsSpeed || 1);
+  if (!s.ttsSpeed.value) s.ttsSpeed.value = "1";
+  s.ttsModel.value = st.ttsModel ?? "";
+  s.ttsAuto.checked = !!st.ttsAuto;
   s.encrypt.checked = st.encryptData !== false;
   s.vaultKeyRow.hidden = true;
   renderVaultStatus();
@@ -358,6 +367,10 @@ $("#settings-form").addEventListener("submit", async (e) => {
     transcriptionLanguage: s.sttLang.value,
     transcriptionUrl: s.sttUrl.value.trim(),
     transcriptionVocabulary: s.sttVocab.value,
+    ttsVoice: s.ttsVoice.value.trim() || "fr_marie_neutral",
+    ttsSpeed: Number(s.ttsSpeed.value) || 1,
+    ttsModel: s.ttsModel.value.trim() || "voxtral-mini-tts-3-0",
+    ttsAuto: s.ttsAuto.checked,
     encryptData: s.encrypt.checked,
   };
   try {

@@ -15,6 +15,7 @@ import { renderUsage, stop } from "./run";
 import { openSettings, pollMcp, refreshKeyStatus } from "./settings-ui";
 import { initUpdates } from "./updates-ui";
 import "./attachments";
+import { stopSpeech } from "./speech";
 
 $("#open-settings").addEventListener("click", () => openSettings());
 $("#new-chat").addEventListener("click", () => newChat());
@@ -63,6 +64,8 @@ window.addEventListener("keydown", (e) => {
     // WebKitGTK ne ferme pas toujours le <dialog> natif avec Échap.
     e.preventDefault();
     [...document.querySelectorAll<HTMLDialogElement>("dialog[open]")].pop()!.close();
+  } else if (e.key === "Escape" && stopSpeech()) {
+    e.preventDefault();
   } else if (e.key === "Escape" && cancelDictation()) {
     e.preventDefault();
   } else if (e.key === "Escape" && state.busy) {

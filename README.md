@@ -33,6 +33,12 @@ Bouton micro dans la zone de saisie (`Ctrl/⌘+Maj+D`, `Échap` pour annuler) : 
 - Langue configurable (français par défaut) ou détection automatique
 - **Serveur de transcription auto-hébergé** possible (toute API compatible `/v1/audio/transcriptions` : Voxtral via vLLM, Speaches/faster-whisper…) ; la clé Mistral n'est alors jamais transmise
 
+### Lecture à voix haute
+Bouton 🔊 sous chaque réponse (`Échap` pour arrêter) : synthèse vocale **Voxtral TTS** de Mistral (`voxtral-mini-tts-3-0`, voix française Marie par défaut).
+- Le Markdown est nettoyé (les blocs de code ne sont pas lus), le texte découpé en passages ; le suivant est préparé pendant la lecture
+- **Lecture automatique** des nouvelles réponses en option, vitesse réglable (Réglages → Outils)
+- L'audio reste **en mémoire**, jamais écrit sur le disque
+
 ### Recherche web
 Bascule **Web** dans la zone de saisie. Le modèle dispose alors de `web_search` et `fetch_url` et cite ses sources.
 - Fournisseur **Mistral** (connecteur `web_search` de l'API Conversations) ou **SearXNG** auto-hébergé

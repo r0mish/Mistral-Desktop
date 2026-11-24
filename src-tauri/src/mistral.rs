@@ -515,6 +515,40 @@ pub async fn transcribe(base: &str, key: &str, model: &str, language: &str, voca
     v["text"].as_str().map(|t| t.trim().to_owned()).ok_or_else(|| "Réponse de transcription invalide".into())
 }
 
+/// Synthèse vocale Voxtral TTS : modèle et voix française par défaut.
+pub const TTS_MODEL: &str = "voxtral-mini-tts-3-0";
+pub const TTS_VOICE: &str = "fr_marie_neutral";
+
+/// Synthèse vocale (`POST /v1/audio/speech`). Renvoie l'audio MP3.
+pub async fn speech(base: &str, key: &str, model: &str, voice: &str, input: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    let body = json!({ "model": model, "input": input, "voice_id": voice, "response_format": "mp3" });
+    let resp = client()?
+        .post(endpoint(base, "audio/speech"))
+        .bearer_auth(key)
+        .json(&body)
+        .timeout(Duration::from_secs(120))
+        .send()
+        .await
+        .map_err(|e| format!("Connexion impossible : {e}"))?;
+    if !resp.status().is_success() {
+        return Err(api_error(resp).await);
+    }
+    let is_json = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|t| t.contains("json"));
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    if !is_json {
+        return Ok(bytes.to_vec());
+    }
+    // Réponse JSON : audio encodé en base64 dans `audio_data`.
+    let v: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let data = v["audio_data"].as_str().or_else(|| v["audio"].as_str()).ok_or("Réponse de synthèse vocale invalide")?;
+    base64::engine::general_purpose::STANDARD.decode(data.trim()).map_err(|e| format!("Audio illisible : {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

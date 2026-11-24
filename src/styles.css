@@ -755,3 +755,7 @@ table.usage th { color: var(--muted); font-weight: 500; }
 .temp-toggle.on { color: #8957e5; border-color: color-mix(in srgb, #8957e5 55%, transparent); background: color-mix(in srgb, #8957e5 12%, transparent); }
 .temp-toggle:disabled { cursor: default; }
 #app.temporary #composer { border-color: color-mix(in srgb, #8957e5 45%, var(--border)); }
+
+/* Lecture à voix haute */
+.icon-btn.speaking { color: var(--accent); animation: speak-pulse 1.2s ease-in-out infinite; }
+@keyframes speak-pulse { 50% { opacity: 0.45; } }

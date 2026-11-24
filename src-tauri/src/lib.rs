@@ -398,6 +398,23 @@ async fn dictation_stop(app: AppHandle, dictation: State<'_, Dictation>, transcr
     }
 }
 
+/// Lecture à voix haute d'un passage par Voxtral TTS (API Mistral). Renvoie le MP3 en base64.
+#[tauri::command]
+async fn speak(app: AppHandle, text: String) -> CmdResult<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("Rien à lire".into());
+    }
+    if text.chars().count() > 5000 {
+        return Err("Passage trop long pour la synthèse vocale".into());
+    }
+    let settings = storage::load_settings(&app)?;
+    let model = if settings.tts_model.trim().is_empty() { mistral::TTS_MODEL } else { settings.tts_model.trim() };
+    let voice = if settings.tts_voice.trim().is_empty() { mistral::TTS_VOICE } else { settings.tts_voice.trim() };
+    let audio = mistral::speech(&settings.base_url, &api_key()?, model, voice, text).await?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(audio))
+}
+
 // ------------------------------------------------------------------ SSH
 
 #[tauri::command]
@@ -814,6 +831,7 @@ pub fn run() {
             project_context,
             dictation_start,
             dictation_stop,
+            speak,
         ])
         .build(tauri::generate_context!())
         .expect("erreur au lancement de l'application");

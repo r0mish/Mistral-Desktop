@@ -36,6 +36,11 @@ export interface Settings {
   transcriptionUrl: string;
   /** Termes à favoriser (un par ligne ou séparés par des virgules). */
   transcriptionVocabulary: string;
+  /** Lecture à voix haute (Voxtral TTS). */
+  ttsModel: string;
+  ttsVoice: string;
+  ttsSpeed: number;
+  ttsAuto: boolean;
   encryptData: boolean;
   settingsVersion?: number;
 }
@@ -348,6 +353,7 @@ export const api = {
     channel.onmessage = onLevel;
     return invoke<void>("dictation_start", { onLevel: channel });
   },
+  speak: (text: string) => invoke<string>("speak", { text }),
   dictationStop: (transcribe: boolean) => invoke<{ text: string; note: string | null } | null>("dictation_stop", { transcribe }),
 
   searchConversations: (query: string) => invoke<SearchHit[]>("search_conversations", { query }),

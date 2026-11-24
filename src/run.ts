@@ -10,9 +10,10 @@ import { el, errMsg, maxContext, modelInfo, opts, state, sysPrompt, toolCtx, uid
 import { autoGrow, toast } from "./ui";
 import { refreshConvs, renderSidebar } from "./sidebar";
 import { loadInstructions, renderChrome, toggleWsMenu, updateComposerState } from "./chrome";
-import { guessRisk, renderConversation, rerenderMessage, scrollBottom } from "./thread";
+import { guessRisk, renderConversation, rerenderMessage, scrollBottom, turnText } from "./thread";
 import { renderAttachments } from "./attachments";
 import { openSettings } from "./settings-ui";
+import { speakMessage } from "./speech";
 
 const MAX_CHAT_STEPS = 15;
 const MAX_AUTO_CONTINUE = 2;
@@ -522,6 +523,10 @@ export async function runAgent() {
     renderSidebar();
     renderUsage();
     await saveCurrent();
+    // Lecture automatique de la réponse finale (Chat uniquement), si la conversation est toujours affichée.
+    if (outcome.kind === "done" && conv.kind === "chat" && state.settings.ttsAuto && state.current === conv && last?.role === "assistant") {
+      void speakMessage(last.id, turnText(last));
+    }
   }
 }
 

@@ -8,6 +8,7 @@ import { fillModelSelect, icons, toast } from "./ui";
 import { renderChrome, setOpt } from "./chrome";
 import { renderConversation } from "./thread";
 import { stop } from "./run";
+import { stopSpeech } from "./speech";
 
 // ---------------------------------------------------------------- barre latérale
 
@@ -225,6 +226,7 @@ export async function openConversation(id: string) {
     toast("Arrêtez la génération en cours avant de changer de conversation.", true);
     return;
   }
+  stopSpeech();
   try {
     state.current = await api.loadConversation(id);
   } catch (e) {
@@ -248,6 +250,7 @@ export function newChat(temporary = false) {
     toast("Arrêtez la génération en cours d'abord.", true);
     return;
   }
+  stopSpeech();
   state.current = null;
   state.draft = {
     // Pas de dossier repris en silence : on le choisit explicitement (sauf projet avec dossier).

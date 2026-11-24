@@ -58,6 +58,12 @@ pub struct Settings {
     pub transcription_url: String,
     /// Termes à favoriser par la transcription (un par ligne ou séparés par des virgules).
     pub transcription_vocabulary: String,
+    /// Lecture à voix haute (Voxtral TTS) : modèle, voix et vitesse de lecture locale.
+    pub tts_model: String,
+    pub tts_voice: String,
+    pub tts_speed: f32,
+    /// Lit automatiquement chaque nouvelle réponse du chat.
+    pub tts_auto: bool,
     /// Chiffrement des conversations, projets et mcp.json (clé dans le trousseau du système).
     pub encrypt_data: bool,
     /// Version du format des réglages, pour les migrations (absent = 0).
@@ -141,6 +147,10 @@ impl Default for Settings {
             transcription_language: "fr".into(),
             transcription_url: String::new(),
             transcription_vocabulary: String::new(),
+            tts_model: crate::mistral::TTS_MODEL.into(),
+            tts_voice: crate::mistral::TTS_VOICE.into(),
+            tts_speed: 1.0,
+            tts_auto: false,
             encrypt_data: true,
             settings_version: SETTINGS_VERSION,
         }

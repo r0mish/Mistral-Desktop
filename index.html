@@ -290,6 +290,38 @@
             <p class="muted small">Le son est capté en mémoire uniquement (jamais écrit sur le disque) puis envoyé pour transcription à l'API Mistral, ou à votre serveur compatible <code>/v1/audio/transcriptions</code> (Voxtral via vLLM, Speaches/faster-whisper…). La clé Mistral n'est jamais transmise à un serveur personnalisé.</p>
           </fieldset>
           <fieldset>
+            <legend>Lecture à voix haute</legend>
+            <div class="grid2">
+              <label>Voix
+                <input id="s-tts-voice" list="tts-voices" placeholder="fr_marie_neutral" spellcheck="false" />
+                <datalist id="tts-voices">
+                  <option value="fr_marie_neutral">Marie (français, neutre)</option>
+                  <option value="fr_marie_happy">Marie (français, joyeuse)</option>
+                  <option value="fr_marie_curious">Marie (français, curieuse)</option>
+                  <option value="voice_592">Marie (Voxtral 3)</option>
+                  <option value="voice_3137">Manon (Voxtral 3)</option>
+                  <option value="voice_589">Léa (Voxtral 3)</option>
+                  <option value="voice_3141">Camille (Voxtral 3)</option>
+                </datalist>
+              </label>
+              <label>Vitesse de lecture
+                <select id="s-tts-speed">
+                  <option value="0.8">0,8×</option>
+                  <option value="1">1× (normale)</option>
+                  <option value="1.15">1,15×</option>
+                  <option value="1.3">1,3×</option>
+                  <option value="1.5">1,5×</option>
+                  <option value="2">2×</option>
+                </select>
+              </label>
+            </div>
+            <label>Modèle de synthèse vocale
+              <input id="s-tts-model" placeholder="voxtral-mini-tts-3-0" spellcheck="false" />
+            </label>
+            <label class="check"><input id="s-tts-auto" type="checkbox" /> Lire automatiquement chaque nouvelle réponse (Chat)</label>
+            <p class="muted small">Bouton 🔊 sous chaque réponse, <code>Échap</code> pour arrêter. Le texte de la réponse (sans les blocs de code) est envoyé à l'API Mistral (Voxtral TTS, facturé au caractère) ; l'audio est lu en mémoire, jamais écrit sur le disque.</p>
+          </fieldset>
+          <fieldset>
             <legend>Documents PDF</legend>
             <label>Conversion en texte
               <select id="s-pdf">

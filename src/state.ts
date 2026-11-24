@@ -16,6 +16,9 @@ export const el = {
   permSelect: $<HTMLSelectElement>("#perm-select"),
   modelSelect: $<HTMLSelectElement>("#model-select"),
   exportBtn: $<HTMLButtonElement>("#export-btn"),
+  tempBadge: $("#temp-badge"),
+  tempToggle: $<HTMLButtonElement>("#temp-toggle"),
+  disclaimer: $("#disclaimer"),
   messages: $("#messages"),
   composer: $<HTMLFormElement>("#composer"),
   input: $<HTMLTextAreaElement>("#input"),
@@ -71,6 +74,7 @@ export interface Draft {
   permissionMode: PermissionMode;
   systemAccess?: boolean;
   projectId?: string;
+  temporary?: boolean;
 }
 
 export const state = {
@@ -160,6 +164,7 @@ export const opts = () => {
     systemAccess: !!(c ? c.systemAccess : state.draft.systemAccess),
     permissionMode: (c ? c.permissionMode : state.draft.permissionMode) ?? "ask",
     projectId: c ? c.projectId : state.draft.projectId,
+    temporary: !!(c ? c.temporary : state.draft.temporary),
   };
 };
 

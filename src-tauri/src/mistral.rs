@@ -40,6 +40,10 @@ pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub top_p: Option<f32>,
+    #[serde(default)]
+    pub random_seed: Option<u64>,
     /// Définitions d'outils au format Mistral (`[{type: "function", function: {...}}]`).
     #[serde(default)]
     pub tools: Vec<Value>,
@@ -87,6 +91,17 @@ pub fn validate_base_url(url: &str) -> Result<(), String> {
         // HTTP en clair toléré uniquement pour un serveur local.
         "http" if matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")) => Ok(()),
         _ => Err("L'URL doit être en HTTPS (HTTP accepté seulement pour localhost)".into()),
+    }
+}
+
+/// Nom du paramètre de graine : `random_seed` pour l'API Mistral, `seed` pour les serveurs
+/// OpenAI-like (vLLM, llama.cpp…) qui servent les modèles open-weight.
+fn seed_param(base: &str) -> &'static str {
+    let host = reqwest::Url::parse(base).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_default();
+    if host == "mistral.ai" || host.ends_with(".mistral.ai") {
+        "random_seed"
+    } else {
+        "seed"
     }
 }
 
@@ -234,6 +249,12 @@ pub async fn chat_stream(
     }
     if let Some(m) = req.max_tokens.filter(|m| *m > 0) {
         body["max_tokens"] = json!(m);
+    }
+    if let Some(p) = req.top_p.filter(|p| *p > 0.0 && *p <= 1.0) {
+        body["top_p"] = json!(p);
+    }
+    if let Some(seed) = req.random_seed {
+        body[seed_param(base)] = json!(seed);
     }
     if !req.tools.is_empty() {
         body["tools"] = json!(req.tools);
@@ -503,6 +524,14 @@ mod tests {
         assert_eq!(endpoint("https://api.mistral.ai", "models"), "https://api.mistral.ai/v1/models");
         assert_eq!(endpoint("https://api.mistral.ai/", "models"), "https://api.mistral.ai/v1/models");
         assert_eq!(endpoint("http://localhost:8000/v1", "models"), "http://localhost:8000/v1/models");
+    }
+
+    #[test]
+    fn seed_parameter_depends_on_server() {
+        assert_eq!(seed_param("https://api.mistral.ai"), "random_seed");
+        assert_eq!(seed_param("https://api.mistral.ai/v1"), "random_seed");
+        assert_eq!(seed_param("http://localhost:8000"), "seed");
+        assert_eq!(seed_param("https://evilmistral.ai"), "seed");
     }
 
     #[test]

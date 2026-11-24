@@ -17,7 +17,7 @@ import { initUpdates } from "./updates-ui";
 import "./attachments";
 
 $("#open-settings").addEventListener("click", () => openSettings());
-$("#new-chat").addEventListener("click", newChat);
+$("#new-chat").addEventListener("click", () => newChat());
 $("#toggle-sidebar").addEventListener("click", () => el.app.classList.toggle("sidebar-hidden"));
 
 // Liens : toujours dans le navigateur du système, jamais dans la WebView.
@@ -32,7 +32,10 @@ document.addEventListener("click", (e) => {
 window.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;
   const k = e.key.toLowerCase();
-  if (mod && k === "n") {
+  if (mod && e.shiftKey && k === "n") {
+    e.preventDefault();
+    newChat(true);
+  } else if (mod && k === "n") {
     e.preventDefault();
     newChat();
   } else if (mod && e.key === ",") {

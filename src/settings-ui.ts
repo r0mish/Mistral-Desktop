@@ -18,6 +18,8 @@ const s = {
   system: $<HTMLTextAreaElement>("#s-system"),
   temp: $<HTMLInputElement>("#s-temp"),
   max: $<HTMLInputElement>("#s-max"),
+  topP: $<HTMLInputElement>("#s-top-p"),
+  seed: $<HTMLInputElement>("#s-seed"),
   theme: $<HTMLSelectElement>("#s-theme"),
   enter: $<HTMLInputElement>("#s-enter"),
   base: $<HTMLInputElement>("#s-base"),
@@ -260,6 +262,8 @@ export async function openSettings(tab = "general") {
   s.system.value = st.systemPrompt;
   s.temp.value = st.temperature?.toString() ?? "";
   s.max.value = st.maxTokens?.toString() ?? "";
+  s.topP.value = st.topP?.toString() ?? "";
+  s.seed.value = st.randomSeed?.toString() ?? "";
   s.theme.value = st.theme;
   s.enter.checked = st.sendOnEnter;
   s.base.value = st.baseUrl;
@@ -333,6 +337,8 @@ $("#settings-form").addEventListener("submit", async (e) => {
     systemPrompt: s.system.value,
     temperature: num(s.temp.value),
     maxTokens: num(s.max.value),
+    topP: num(s.topP.value),
+    randomSeed: num(s.seed.value),
     theme: s.theme.value as Settings["theme"],
     sendOnEnter: s.enter.checked,
     webSearchProvider: s.webProvider.value as Settings["webSearchProvider"],
@@ -360,6 +366,16 @@ $("#settings-form").addEventListener("submit", async (e) => {
     s.error.textContent = errMsg(err);
     s.error.hidden = false;
     return showTab("usage");
+  }
+  if (next.topP !== null && !(next.topP > 0 && next.topP <= 1)) {
+    s.error.textContent = "Top P doit être compris entre 0 (exclu) et 1.";
+    s.error.hidden = false;
+    return showTab("general");
+  }
+  if (next.randomSeed !== null && !(Number.isInteger(next.randomSeed) && next.randomSeed >= 0)) {
+    s.error.textContent = "La graine doit être un entier positif.";
+    s.error.hidden = false;
+    return showTab("general");
   }
   if (next.webSearchProvider === "searxng" && !/^https?:\/\//.test(next.searxngUrl)) {
     s.error.textContent = "Indiquez l'URL de votre instance SearXNG (onglet Outils).";

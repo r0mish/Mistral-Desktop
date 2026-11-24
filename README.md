@@ -14,7 +14,8 @@ Client de bureau **léger, open source et sans télémétrie** pour l'API [Mistr
 - **Raisonnement** des modèles Magistral dans un bloc repliable
 - Pièces jointes : **images** (modèles vision), **PDF** et **fichiers texte/code**, par bouton, glisser-déposer ou collage
 - Historique local : **recherche plein texte** (titres et contenu des messages, insensible aux accents, extrait surligné), renommage, suppression, regroupement par date ; modifier un message, régénérer une réponse
-- Choix du modèle par conversation, instructions système, température, tokens max, **export Markdown**
+- Choix du modèle par conversation, instructions système, température, tokens max, **Top P** et **graine** (`random_seed`, réponses reproductibles), **export Markdown**
+- **Conversation temporaire** (bouton « Temporaire » ou `Ctrl/⌘+Maj+N`) : jamais écrite sur le disque, ni dans l'historique ni dans la recherche, et effacée dès que vous la quittez. Seuls les compteurs de tokens du jour (sans contenu) sont comptabilisés
 
 ### Projets
 Comme dans Claude Desktop : des conversations regroupées qui partagent des **consignes** et des **fichiers de référence** (texte, Markdown, code, CSV, PDF).
@@ -115,7 +116,7 @@ Configuration au **format de Claude Desktop** (Réglages → MCP) :
 - **Mises à jour** : détection des nouvelles releases GitHub (désactivable). Bouton **« Installer et redémarrer »** : la mise à jour est téléchargée, sa **signature vérifiée** (clé publique intégrée à l'application, protection contre les retours à une version antérieure) puis installée. Sous Linux, uniquement pour l'AppImage ; les paquets `.deb`/`.rpm` se mettent à jour avec le gestionnaire de paquets
 
 ### Raccourcis
-`Ctrl/⌘+N` nouvelle conversation · `Ctrl/⌘+1` / `2` Chat / Code · `Ctrl/⌘+K` recherche · `Ctrl/⌘+B` barre latérale · `Ctrl/⌘+,` réglages · `Ctrl/⌘+G` panneau Git · `Ctrl/⌘+Maj+D` dictée · `Échap` arrêter
+`Ctrl/⌘+N` nouvelle conversation · `Ctrl/⌘+Maj+N` conversation temporaire · `Ctrl/⌘+1` / `2` Chat / Code · `Ctrl/⌘+K` recherche · `Ctrl/⌘+B` barre latérale · `Ctrl/⌘+,` réglages · `Ctrl/⌘+G` panneau Git · `Ctrl/⌘+Maj+D` dictée · `Échap` arrêter
 
 ## Vie privée et sécurité
 

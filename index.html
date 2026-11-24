@@ -46,6 +46,9 @@
             <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" /></svg>
           </button>
           <h1 id="conv-title"></h1>
+          <span id="temp-badge" class="temp-badge" title="Rien n'est enregistré sur cet appareil : la conversation disparaît dès que vous la quittez." hidden>
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8" /><path d="M12 9v4l2 2M9 2h6" /></svg>Temporaire
+          </span>
           <button id="ws-chip" class="chip-btn" title="Ouvrir le dossier du projet" hidden>
             <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>
             <span></span>
@@ -88,6 +91,9 @@
                 <svg viewBox="0 0 24 24"><path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" /></svg>
               </button>
               <input id="file-input" type="file" multiple hidden />
+              <button type="button" id="temp-toggle" class="toggle temp-toggle" title="Conversation temporaire (Ctrl+Maj+N) : jamais enregistrée sur le disque, effacée dès que vous la quittez">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8" /><path d="M12 9v4l2 2M9 2h6" /></svg><span>Temporaire</span>
+              </button>
               <button type="button" id="web-toggle" class="toggle" title="Recherche web">
                 <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" /></svg>Web
               </button>
@@ -110,7 +116,7 @@
               </button>
             </div>
           </form>
-          <p class="disclaimer">Les réponses peuvent contenir des erreurs. Conversations stockées uniquement sur cet appareil.</p>
+          <p class="disclaimer" id="disclaimer">Les réponses peuvent contenir des erreurs. Conversations stockées uniquement sur cet appareil.</p>
         </footer>
         <div id="drop-overlay" hidden>Déposez vos fichiers ici</div>
 
@@ -182,6 +188,8 @@
             <div class="grid2">
               <label>Température <input id="s-temp" type="number" min="0" max="1.5" step="0.1" placeholder="défaut du modèle" /></label>
               <label>Tokens max <input id="s-max" type="number" min="1" step="1" placeholder="illimité" /></label>
+              <label>Top P <input id="s-top-p" type="number" min="0.01" max="1" step="0.05" placeholder="défaut du modèle" title="Échantillonnage nucleus : ne garde que les mots les plus probables dont la probabilité cumulée atteint cette valeur. Modifiez plutôt la température ou le Top P, pas les deux." /></label>
+              <label>Graine (seed) <input id="s-seed" type="number" min="0" step="1" placeholder="aléatoire" title="Même graine + même question + mêmes réglages = réponse reproductible (paramètre random_seed de l'API Mistral)" /></label>
             </div>
           </fieldset>
 

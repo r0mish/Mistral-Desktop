@@ -20,6 +20,10 @@ pub struct Settings {
     pub system_prompt: String,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
+    /// Échantillonnage nucleus (0–1) ; absent = défaut du modèle.
+    pub top_p: Option<f32>,
+    /// Graine aléatoire (réponses reproductibles) ; absent = aléatoire.
+    pub random_seed: Option<u64>,
     pub theme: String,
     pub send_on_enter: bool,
     /// « mistral » (connecteur web_search) ou « searxng » (instance auto-hébergée).
@@ -114,6 +118,8 @@ impl Default for Settings {
             system_prompt: String::new(),
             temperature: None,
             max_tokens: None,
+            top_p: None,
+            random_seed: None,
             theme: "system".into(),
             send_on_enter: true,
             web_search_provider: "mistral".into(),
@@ -364,6 +370,10 @@ pub fn load_conversation(app: &AppHandle, id: &str) -> R<Conversation> {
 
 pub fn save_conversation(app: &AppHandle, c: &Conversation) -> R<()> {
     check_id(&c.id)?;
+    // Conversation temporaire : jamais écrite sur le disque (garde-fou en plus de l'interface).
+    if c.extra.get("temporary").and_then(Value::as_bool) == Some(true) {
+        return Ok(());
+    }
     write_secret_json(&conv_dir(app)?.join(format!("{}.json", c.id)), c)?;
     let mut idx = read_index(app)?;
     idx.retain(|s| s.id != c.id);

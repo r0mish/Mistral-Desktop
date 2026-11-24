@@ -23,6 +23,8 @@ const AUTO_CONTINUE_TEXT = "Continue : exécute directement les actions annoncé
 export async function saveCurrent() {
   if (!state.current) return;
   state.current.updatedAt = Date.now();
+  // Conversation temporaire : rien n'est écrit sur le disque.
+  if (state.current.temporary) return;
   try {
     await api.saveConversation(state.current);
     await refreshConvs();
@@ -67,6 +69,7 @@ export async function send() {
       mcp: o.mcp,
       ...(o.kind === "code" && o.systemAccess ? { systemAccess: true } : {}),
       ...(o.projectId ? { projectId: o.projectId } : {}),
+      ...(o.temporary ? { temporary: true } : {}),
     };
   }
   state.current.messages.push({
@@ -246,6 +249,8 @@ async function streamTurn(conv: Conversation, msg: Message, tools: Awaited<Retur
         messages,
         temperature: state.settings.temperature,
         maxTokens: state.settings.maxTokens,
+        topP: state.settings.topP,
+        randomSeed: state.settings.randomSeed,
         tools: tools.map((t) => t.definition),
       },
       (ev) => {

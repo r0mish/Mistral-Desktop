@@ -6,6 +6,10 @@ export interface Settings {
   systemPrompt: string;
   temperature: number | null;
   maxTokens: number | null;
+  /** Échantillonnage nucleus (0–1) ; null = défaut du modèle. */
+  topP: number | null;
+  /** Graine aléatoire pour des réponses reproductibles ; null = aléatoire. */
+  randomSeed: number | null;
   theme: "system" | "light" | "dark";
   sendOnEnter: boolean;
   webSearchProvider: "mistral" | "searxng";
@@ -112,6 +116,8 @@ export interface Conversation {
   /** Consommation hors messages (compactions), par modèle. */
   extraUsage?: Record<string, Usage>;
   projectId?: string;
+  /** Conversation temporaire : jamais écrite sur le disque, perdue en la quittant. */
+  temporary?: boolean;
 }
 
 export interface ConversationSummary {
@@ -386,6 +392,8 @@ export const api = {
       messages: ApiMessage[];
       temperature: number | null;
       maxTokens: number | null;
+      topP?: number | null;
+      randomSeed?: number | null;
       tools: ToolDef["definition"][];
       toolChoice?: "auto" | "none";
     },

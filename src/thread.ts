@@ -9,6 +9,7 @@ import { autoGrow, copy, icons } from "./ui";
 import { chooseWorkspace, renderChrome, selectWorkspace } from "./chrome";
 import { runAgent } from "./run";
 import { openSettings } from "./settings-ui";
+import { isSpeaking, onSpeakClick } from "./speech";
 
 // ---------------------------------------------------------------- messages
 
@@ -121,6 +122,7 @@ function messageHtml(m: Message, next: Message | undefined): string {
     ? ""
     : `<div class="msg-actions">
         <button class="icon-btn sm" data-act="copy" title="Copier">${icons.copy}</button>
+        <button class="icon-btn sm${isSpeaking(m.id) ? " speaking" : ""}" data-act="speak" title="${isSpeaking(m.id) ? "Arrêter la lecture (Échap)" : "Lire à voix haute (Voxtral)"}">${icons.speaker}</button>
         ${!next ? `<button class="icon-btn sm" data-act="retry" title="Régénérer">${icons.retry}</button>` : ""}
         <span class="meta">${escapeHtml(meta)}</span>
       </div>`;
@@ -234,6 +236,8 @@ el.messages.addEventListener("click", async (ev) => {
   switch (actBtn.dataset.act) {
     case "copy":
       return copy(turnText(msg), actBtn);
+    case "speak":
+      return onSpeakClick(msg.id, turnText(msg));
     case "retry":
       return regenerate(msg);
     case "edit":
@@ -242,7 +246,7 @@ el.messages.addEventListener("click", async (ev) => {
 });
 
 /** Texte d'un tour complet de l'agent (plusieurs messages assistant consécutifs). */
-function turnText(msg: Message): string {
+export function turnText(msg: Message): string {
   if (msg.role === "user" || !state.current) return msg.content;
   const msgs = state.current.messages;
   let i = msgs.indexOf(msg);

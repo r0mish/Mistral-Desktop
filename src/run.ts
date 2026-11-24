@@ -10,9 +10,10 @@ import { el, errMsg, maxContext, modelInfo, opts, state, sysPrompt, toolCtx, uid
 import { autoGrow, toast } from "./ui";
 import { refreshConvs, renderSidebar } from "./sidebar";
 import { loadInstructions, renderChrome, toggleWsMenu, updateComposerState } from "./chrome";
-import { guessRisk, renderConversation, rerenderMessage, scrollBottom } from "./thread";
+import { guessRisk, renderConversation, rerenderMessage, scrollBottom, turnText } from "./thread";
 import { renderAttachments } from "./attachments";
 import { openSettings } from "./settings-ui";
+import { speakMessage } from "./speech";
 
 const MAX_CHAT_STEPS = 15;
 const MAX_AUTO_CONTINUE = 2;
@@ -23,6 +24,8 @@ const AUTO_CONTINUE_TEXT = "Continue : exécute directement les actions annoncé
 export async function saveCurrent() {
   if (!state.current) return;
   state.current.updatedAt = Date.now();
+  // Conversation temporaire : rien n'est écrit sur le disque.
+  if (state.current.temporary) return;
   try {
     await api.saveConversation(state.current);
     await refreshConvs();
@@ -50,6 +53,7 @@ export async function send() {
   }
 
   if (!state.current) {
+    const assistant = o.kind === "chat" ? state.assistants.find((a) => a.id === o.assistantId) : undefined;
     const now = Date.now();
     const title = (text || files[0]?.name || "Image").replace(/\s+/g, " ").slice(0, 60);
     state.current = {
@@ -59,7 +63,7 @@ export async function send() {
       model,
       createdAt: now,
       updatedAt: now,
-      systemPrompt: state.settings.systemPrompt || null,
+      systemPrompt: assistant ? assistant.instructions || null : state.settings.systemPrompt || null,
       messages: [],
       workspace: o.workspace,
       permissionMode: o.permissionMode,
@@ -67,6 +71,8 @@ export async function send() {
       mcp: o.mcp,
       ...(o.kind === "code" && o.systemAccess ? { systemAccess: true } : {}),
       ...(o.projectId ? { projectId: o.projectId } : {}),
+      ...(o.temporary ? { temporary: true } : {}),
+      ...(assistant ? { assistantId: assistant.id, temperature: assistant.temperature } : {}),
     };
   }
   state.current.messages.push({
@@ -244,8 +250,10 @@ async function streamTurn(conv: Conversation, msg: Message, tools: Awaited<Retur
       {
         model: conv.model,
         messages,
-        temperature: state.settings.temperature,
+        temperature: conv.temperature ?? state.settings.temperature,
         maxTokens: state.settings.maxTokens,
+        topP: state.settings.topP,
+        randomSeed: state.settings.randomSeed,
         tools: tools.map((t) => t.definition),
       },
       (ev) => {
@@ -376,6 +384,7 @@ async function runToolCalls(conv: Conversation, msg: Message): Promise<"ok" | "d
     if (state.busy) Object.assign(state.busy, { requestId, msgId: msg.id });
     try {
       const out = await api.runTool(requestId, ctx, tc.name, tc.arguments);
+      if (tc.name === "remember" && !out.isError) state.memories = await api.listMemories().catch(() => state.memories);
       tc.result = out.content;
       tc.status = out.isError ? "error" : "done";
       if (out.diff) tc.diff = out.diff;
@@ -517,6 +526,10 @@ export async function runAgent() {
     renderSidebar();
     renderUsage();
     await saveCurrent();
+    // Lecture automatique de la réponse finale (Chat uniquement), si la conversation est toujours affichée.
+    if (outcome.kind === "done" && conv.kind === "chat" && state.settings.ttsAuto && state.current === conv && last?.role === "assistant") {
+      void speakMessage(last.id, turnText(last));
+    }
   }
 }
 

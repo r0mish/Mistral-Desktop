@@ -14,7 +14,8 @@ Client de bureau **léger, open source et sans télémétrie** pour l'API [Mistr
 - **Raisonnement** des modèles Magistral dans un bloc repliable
 - Pièces jointes : **images** (modèles vision), **PDF** et **fichiers texte/code**, par bouton, glisser-déposer ou collage
 - Historique local : **recherche plein texte** (titres et contenu des messages, insensible aux accents, extrait surligné), renommage, suppression, regroupement par date ; modifier un message, régénérer une réponse
-- Choix du modèle par conversation, instructions système, température, tokens max, **export Markdown**
+- Choix du modèle par conversation, instructions système, température, tokens max, **Top P** et **graine** (`random_seed`, réponses reproductibles), **export Markdown**
+- **Conversation temporaire** (bouton « Temporaire » ou `Ctrl/⌘+Maj+N`) : jamais écrite sur le disque, ni dans l'historique ni dans la recherche, et effacée dès que vous la quittez. Seuls les compteurs de tokens du jour (sans contenu) sont comptabilisés
 
 ### Projets
 Comme dans Claude Desktop : des conversations regroupées qui partagent des **consignes** et des **fichiers de référence** (texte, Markdown, code, CSV, PDF).
@@ -24,6 +25,11 @@ Comme dans Claude Desktop : des conversations regroupées qui partagent des **co
 - Consignes et fichiers sont ajoutés à l'invite système de chaque message du projet (estimation du nombre de tokens affichée) ; tout est stocké localement dans `projects/`
 - **Gros projets** (au-delà de 60 000 caractères, jusqu'à 10 millions) : recherche locale BM25 par extraits. Seuls les passages pertinents pour la question sont envoyés (≈ 4 k tokens par message), et le modèle dispose d'un outil `search_project_files` pour chercher d'autres passages. Aucun index ni embedding ne quitte la machine
 
+### Mémoire et assistants
+Réglages → **Personnalisation** :
+- **Mémoire persistante** (désactivée par défaut) : des faits durables (« je travaille sous Debian 13 », « réponses concises ») joints à chaque conversation. Ajout à la main ou par le modèle avec l'outil `remember` quand vous lui dites « retiens que… ». Stockée uniquement sur l'appareil, **chiffrée** avec les conversations, jamais utilisée dans une conversation temporaire
+- **Assistants** : préréglages réutilisables (consignes, modèle, température), choisis dans le menu à côté du modèle pour une nouvelle conversation du Chat. Plus légers qu'un projet
+
 ### Dictée vocale
 Bouton micro dans la zone de saisie (`Ctrl/⌘+Maj+D`, `Échap` pour annuler) : capture native du micro, transcription par **Voxtral 3** (`voxtral-mini-transcribe-3-0` par défaut, ou `voxtral-small-transcribe-3-0`, plus précis), texte inséré au curseur.
 - Si le modèle est refusé par l'API, repli automatique sur Voxtral 2 (`voxtral-mini-latest`), avec un message
@@ -31,6 +37,12 @@ Bouton micro dans la zone de saisie (`Ctrl/⌘+Maj+D`, `Échap` pour annuler) : 
 - Le son reste **en mémoire** (WAV mono 16 kHz, jamais écrit sur le disque), 15 min max
 - Langue configurable (français par défaut) ou détection automatique
 - **Serveur de transcription auto-hébergé** possible (toute API compatible `/v1/audio/transcriptions` : Voxtral via vLLM, Speaches/faster-whisper…) ; la clé Mistral n'est alors jamais transmise
+
+### Lecture à voix haute
+Bouton 🔊 sous chaque réponse (`Échap` pour arrêter) : synthèse vocale **Voxtral TTS** de Mistral (`voxtral-mini-tts-3-0`, voix française Marie par défaut).
+- Le Markdown est nettoyé (les blocs de code ne sont pas lus), le texte découpé en passages ; le suivant est préparé pendant la lecture
+- **Lecture automatique** des nouvelles réponses en option, vitesse réglable (Réglages → Outils)
+- L'audio reste **en mémoire**, jamais écrit sur le disque
 
 ### Recherche web
 Bascule **Web** dans la zone de saisie. Le modèle dispose alors de `web_search` et `fetch_url` et cite ses sources.
@@ -114,8 +126,12 @@ Configuration au **format de Claude Desktop** (Réglages → MCP) :
 - **Consommation** : tokens et coût estimé par conversation, historique par jour et par modèle (Réglages → Utilisation), tarifs modifiables
 - **Mises à jour** : détection des nouvelles releases GitHub (désactivable). Bouton **« Installer et redémarrer »** : la mise à jour est téléchargée, sa **signature vérifiée** (clé publique intégrée à l'application, protection contre les retours à une version antérieure) puis installée. Sous Linux, uniquement pour l'AppImage ; les paquets `.deb`/`.rpm` se mettent à jour avec le gestionnaire de paquets
 
+### Intégration au bureau
+- **Icône dans la barre système** : nouvelle conversation, conversation temporaire, quitter ; option pour garder l'application ouverte quand on ferme la fenêtre
+- **Raccourci global** (désactivé par défaut, ex. `Ctrl+Maj+Espace`) : ouvre une nouvelle conversation depuis n'importe quelle application (Réglages → Général → Bureau ; non disponible sous Wayland)
+
 ### Raccourcis
-`Ctrl/⌘+N` nouvelle conversation · `Ctrl/⌘+1` / `2` Chat / Code · `Ctrl/⌘+K` recherche · `Ctrl/⌘+B` barre latérale · `Ctrl/⌘+,` réglages · `Ctrl/⌘+G` panneau Git · `Ctrl/⌘+Maj+D` dictée · `Échap` arrêter
+`Ctrl/⌘+N` nouvelle conversation · `Ctrl/⌘+Maj+N` conversation temporaire · `Ctrl/⌘+1` / `2` Chat / Code · `Ctrl/⌘+K` recherche · `Ctrl/⌘+B` barre latérale · `Ctrl/⌘+,` réglages · `Ctrl/⌘+G` panneau Git · `Ctrl/⌘+Maj+D` dictée · `Échap` arrêter
 
 ## Vie privée et sécurité
 
@@ -130,6 +146,8 @@ Configuration au **format de Claude Desktop** (Réglages → MCP) :
 | Dictée | Micro ouvert uniquement pendant l'enregistrement (indicateur rouge), audio gardé en mémoire puis envoyé pour transcription à l'API Mistral ou à votre serveur. macOS demande l'autorisation d'accès au micro au premier usage. |
 | MCP | `mcp.json` est stocké en clair dans le dossier de configuration : évitez d'y mettre des secrets sensibles, ou préférez des serveurs locaux. |
 | Auto-hébergement | URL d'API configurable : compatible avec un serveur OpenAI-like (vLLM, Ollama, llama.cpp…) servant les modèles open-weight de Mistral. HTTP en clair accepté seulement sur `localhost`. La recherche web via Mistral et l'OCR nécessitent l'API Mistral ; utilisez SearXNG, l'extraction PDF locale et un serveur de transcription local pour un fonctionnement 100 % local. |
+
+**Sauvegarde** (Réglages → Général) : un fichier `.mdbackup` chiffré par phrase de passe (Argon2id + XChaCha20-Poly1305, indépendant du trousseau) contenant conversations, projets, mémoire, assistants, serveurs SSH (sans mots de passe) et configuration MCP. La restauration fusionne avec les données présentes sans rien supprimer.
 
 Emplacements locaux :
 

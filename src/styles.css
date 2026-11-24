@@ -748,3 +748,23 @@ table.usage th { color: var(--muted); font-weight: 500; }
 .conv-snippet { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .conv-snippet mark { background: color-mix(in srgb, var(--accent) 30%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
 #vault-key { font-family: var(--mono); font-size: 12px; }
+
+/* Conversation temporaire */
+.temp-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; padding: 2px 8px; border-radius: 999px; color: #8957e5; border: 1px solid color-mix(in srgb, #8957e5 50%, transparent); background: color-mix(in srgb, #8957e5 10%, transparent); white-space: nowrap; }
+.temp-badge svg { width: 13px; height: 13px; }
+.temp-toggle.on { color: #8957e5; border-color: color-mix(in srgb, #8957e5 55%, transparent); background: color-mix(in srgb, #8957e5 12%, transparent); }
+.temp-toggle:disabled { cursor: default; }
+#app.temporary #composer { border-color: color-mix(in srgb, #8957e5 45%, var(--border)); }
+
+/* Lecture à voix haute */
+.icon-btn.speaking { color: var(--accent); animation: speak-pulse 1.2s ease-in-out infinite; }
+@keyframes speak-pulse { 50% { opacity: 0.45; } }
+
+/* Mémoire et assistants */
+.mem-item, .as-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; }
+.mem-item span { flex: 1; font-size: 13px; }
+.mem-item small, .as-item small { color: var(--muted); font-size: 11.5px; }
+.as-item > div { flex: 1; display: flex; flex-direction: column; }
+.as-form { border: 1px dashed var(--border); border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+.assistant-chip { font-size: 12px; white-space: nowrap; }
+#assistant-select.on { color: var(--accent); }

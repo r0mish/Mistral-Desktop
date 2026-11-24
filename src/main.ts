@@ -1,6 +1,7 @@
 import "highlight.js/styles/github-dark.css";
 import "./styles.css";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
 import { today } from "./usage";
 import { initSshUi, loadHosts } from "./ssh-ui";
@@ -15,9 +16,11 @@ import { renderUsage, stop } from "./run";
 import { openSettings, pollMcp, refreshKeyStatus } from "./settings-ui";
 import { initUpdates } from "./updates-ui";
 import "./attachments";
+import { stopSpeech } from "./speech";
+import { initPersonalUi, loadPersonal } from "./personal-ui";
 
 $("#open-settings").addEventListener("click", () => openSettings());
-$("#new-chat").addEventListener("click", newChat);
+$("#new-chat").addEventListener("click", () => newChat());
 $("#toggle-sidebar").addEventListener("click", () => el.app.classList.toggle("sidebar-hidden"));
 
 // Liens : toujours dans le navigateur du système, jamais dans la WebView.
@@ -32,7 +35,10 @@ document.addEventListener("click", (e) => {
 window.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;
   const k = e.key.toLowerCase();
-  if (mod && k === "n") {
+  if (mod && e.shiftKey && k === "n") {
+    e.preventDefault();
+    newChat(true);
+  } else if (mod && k === "n") {
     e.preventDefault();
     newChat();
   } else if (mod && e.key === ",") {
@@ -60,6 +66,8 @@ window.addEventListener("keydown", (e) => {
     // WebKitGTK ne ferme pas toujours le <dialog> natif avec Échap.
     e.preventDefault();
     [...document.querySelectorAll<HTMLDialogElement>("dialog[open]")].pop()!.close();
+  } else if (e.key === "Escape" && stopSpeech()) {
+    e.preventDefault();
   } else if (e.key === "Escape" && cancelDictation()) {
     e.preventDefault();
   } else if (e.key === "Escape" && state.busy) {
@@ -81,6 +89,8 @@ async function init() {
   state.workspaces = await api.listWorkspaces().catch(() => []);
   await loadHosts();
   await loadProjects();
+  await loadPersonal();
+  initPersonalUi({ openSettings: (tab) => openSettings(tab) });
   initSshUi({ onOpen: openRemoteWorkspace, toast });
   initProjectsUi({
     onChange: onProjectChange,
@@ -112,5 +122,12 @@ async function init() {
   renderUsage();
   await initUpdates();
 }
+
+// Barre système et raccourci global : nouvelle conversation (temporaire ou non), prête à écrire.
+listen<string>("desktop-action", (e) => {
+  if (state.busy) return el.input.focus();
+  if (state.settings) newChat(e.payload === "temporary");
+  el.input.focus();
+}).catch(() => {});
 
 init();

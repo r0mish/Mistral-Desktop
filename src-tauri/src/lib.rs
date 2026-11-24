@@ -1,5 +1,7 @@
 mod askpass;
 mod audio;
+mod backup;
+mod desktop;
 mod git;
 mod mcp;
 mod mistral;
@@ -124,7 +126,14 @@ fn save_settings(app: AppHandle, settings: Settings) -> CmdResult<()> {
             Err(e) => *vault::LAST_ERROR.lock().unwrap() = Some(e),
         }
     }
-    storage::save_settings(&app, &settings)
+    desktop::parse_shortcut(&settings.global_shortcut)?;
+    let shortcut_changed = storage::load_settings(&app).map(|s| s.global_shortcut != settings.global_shortcut).unwrap_or(true);
+    storage::save_settings(&app, &settings)?;
+    desktop::set_tray_visible(&app, settings.tray_icon);
+    if shortcut_changed {
+        desktop::apply_shortcut(&app, &settings.global_shortcut)?;
+    }
+    Ok(())
 }
 
 /// Active le chiffrement puis chiffre les fichiers existants. Ne crée jamais de nouvelle clé
@@ -229,8 +238,9 @@ fn cancel_stream(streams: State<'_, Streams>, request_id: String) {
 // ------------------------------------------------------------------ outils
 
 #[tauri::command]
-fn tool_definitions(app: AppHandle, mcp: State<'_, Arc<McpManager>>, ctx: ToolContext) -> Vec<ToolDef> {
+fn tool_definitions(app: AppHandle, mcp: State<'_, Arc<McpManager>>, mut ctx: ToolContext) -> Vec<ToolDef> {
     let settings = storage::load_settings(&app).unwrap_or_default();
+    ctx.memory &= settings.memory_enabled;
     tools::definitions(&ctx, &mcp, &shell::detect(&settings.shell))
 }
 
@@ -256,6 +266,16 @@ async fn run_tool(
     arguments: String,
 ) -> CmdResult<ToolOutput> {
     let settings = storage::load_settings(&app)?;
+    if name == "remember" {
+        // Mémoire persistante : seulement si elle est activée et proposée dans ce contexte.
+        if !(ctx.memory && settings.memory_enabled) {
+            return Ok(ToolOutput { content: "Erreur : mémoire désactivée".into(), is_error: true, diff: None });
+        }
+        return Ok(match tools::remember_text(&arguments).and_then(|t| storage::add_memory(&app, &t)) {
+            Ok(content) => ToolOutput { content, is_error: false, diff: None },
+            Err(e) => ToolOutput { content: format!("Erreur : {e}"), is_error: true, diff: None },
+        });
+    }
     let approved = storage::load_workspaces(&app);
     let hosts = storage::load_ssh_hosts(&app);
     let project = ctx.project.as_deref().and_then(|id| storage::load_project(&app, id).ok());
@@ -396,6 +416,57 @@ async fn dictation_stop(app: AppHandle, dictation: State<'_, Dictation>, transcr
         }
         Err(e) => Err(e),
     }
+}
+
+// ------------------------------------------------------------------ sauvegarde
+
+#[tauri::command]
+async fn backup_export(app: AppHandle, passphrase: String) -> CmdResult<Option<backup::Report>> {
+    backup::export(&app, &passphrase).await
+}
+
+#[tauri::command]
+async fn backup_import(app: AppHandle, passphrase: String) -> CmdResult<Option<backup::Report>> {
+    backup::import(&app, &passphrase).await
+}
+
+// ------------------------------------------------------------------ mémoire et assistants
+
+#[tauri::command]
+fn list_memories(app: AppHandle) -> CmdResult<Vec<storage::Memory>> {
+    storage::load_memories(&app)
+}
+
+#[tauri::command]
+fn save_memories(app: AppHandle, items: Vec<storage::Memory>) -> CmdResult<()> {
+    storage::save_memories(&app, &items)
+}
+
+#[tauri::command]
+fn list_assistants(app: AppHandle) -> CmdResult<Vec<storage::Assistant>> {
+    storage::load_assistants(&app)
+}
+
+#[tauri::command]
+fn save_assistants(app: AppHandle, items: Vec<storage::Assistant>) -> CmdResult<()> {
+    storage::save_assistants(&app, &items)
+}
+
+/// Lecture à voix haute d'un passage par Voxtral TTS (API Mistral). Renvoie le MP3 en base64.
+#[tauri::command]
+async fn speak(app: AppHandle, text: String) -> CmdResult<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("Rien à lire".into());
+    }
+    if text.chars().count() > 5000 {
+        return Err("Passage trop long pour la synthèse vocale".into());
+    }
+    let settings = storage::load_settings(&app)?;
+    let model = if settings.tts_model.trim().is_empty() { mistral::TTS_MODEL } else { settings.tts_model.trim() };
+    let voice = if settings.tts_voice.trim().is_empty() { mistral::TTS_VOICE } else { settings.tts_voice.trim() };
+    let audio = mistral::speech(&settings.base_url, &api_key()?, model, voice, text).await?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(audio))
 }
 
 // ------------------------------------------------------------------ SSH
@@ -725,6 +796,7 @@ pub fn run() {
     let app = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(Streams::default())
         .manage(Dictation::default())
         .manage(Arc::new(McpManager::default()))
@@ -739,6 +811,13 @@ pub fn run() {
                 }
             }
             askpass::start(app.handle().clone());
+            let settings = storage::load_settings(app.handle()).unwrap_or_default();
+            if let Err(e) = desktop::create_tray(app.handle(), settings.tray_icon) {
+                eprintln!("barre système indisponible : {e}");
+            }
+            if let Err(e) = desktop::apply_shortcut(app.handle(), &settings.global_shortcut) {
+                eprintln!("{e}");
+            }
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mgr = handle.state::<Arc<McpManager>>().inner().clone();
@@ -814,11 +893,32 @@ pub fn run() {
             project_context,
             dictation_start,
             dictation_stop,
+            speak,
+            backup_export,
+            backup_import,
+            list_memories,
+            save_memories,
+            list_assistants,
+            save_assistants,
         ])
         .build(tauri::generate_context!())
         .expect("erreur au lancement de l'application");
 
     app.run(|handle, event| {
+        // Fermeture de la fenêtre : masquée dans la barre système si l'option est active.
+        if let tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::CloseRequested { api, .. }, .. } = &event {
+            if label == "main" && desktop::hide_on_close(handle) {
+                api.prevent_close();
+                if let Some(w) = handle.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            }
+        }
+        // macOS : clic sur l'icône du Dock alors que la fenêtre est masquée.
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = event {
+            desktop::show_main(handle);
+        }
         if let tauri::RunEvent::Exit = event {
             // Arrêt propre des serveurs MCP (processus enfants).
             let mgr = handle.state::<Arc<McpManager>>().inner().clone();

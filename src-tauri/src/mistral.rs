@@ -40,6 +40,10 @@ pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub top_p: Option<f64>,
+    #[serde(default)]
+    pub random_seed: Option<u64>,
     /// Définitions d'outils au format Mistral (`[{type: "function", function: {...}}]`).
     #[serde(default)]
     pub tools: Vec<Value>,
@@ -87,6 +91,17 @@ pub fn validate_base_url(url: &str) -> Result<(), String> {
         // HTTP en clair toléré uniquement pour un serveur local.
         "http" if matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")) => Ok(()),
         _ => Err("L'URL doit être en HTTPS (HTTP accepté seulement pour localhost)".into()),
+    }
+}
+
+/// Nom du paramètre de graine : `random_seed` pour l'API Mistral, `seed` pour les serveurs
+/// OpenAI-like (vLLM, llama.cpp…) qui servent les modèles open-weight.
+fn seed_param(base: &str) -> &'static str {
+    let host = reqwest::Url::parse(base).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_default();
+    if host == "mistral.ai" || host.ends_with(".mistral.ai") {
+        "random_seed"
+    } else {
+        "seed"
     }
 }
 
@@ -234,6 +249,12 @@ pub async fn chat_stream(
     }
     if let Some(m) = req.max_tokens.filter(|m| *m > 0) {
         body["max_tokens"] = json!(m);
+    }
+    if let Some(p) = req.top_p.filter(|p| *p > 0.0 && *p <= 1.0) {
+        body["top_p"] = json!(p);
+    }
+    if let Some(seed) = req.random_seed {
+        body[seed_param(base)] = json!(seed);
     }
     if !req.tools.is_empty() {
         body["tools"] = json!(req.tools);
@@ -494,6 +515,40 @@ pub async fn transcribe(base: &str, key: &str, model: &str, language: &str, voca
     v["text"].as_str().map(|t| t.trim().to_owned()).ok_or_else(|| "Réponse de transcription invalide".into())
 }
 
+/// Synthèse vocale Voxtral TTS : modèle et voix française par défaut.
+pub const TTS_MODEL: &str = "voxtral-mini-tts-3-0";
+pub const TTS_VOICE: &str = "fr_marie_neutral";
+
+/// Synthèse vocale (`POST /v1/audio/speech`). Renvoie l'audio MP3.
+pub async fn speech(base: &str, key: &str, model: &str, voice: &str, input: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    let body = json!({ "model": model, "input": input, "voice_id": voice, "response_format": "mp3" });
+    let resp = client()?
+        .post(endpoint(base, "audio/speech"))
+        .bearer_auth(key)
+        .json(&body)
+        .timeout(Duration::from_secs(120))
+        .send()
+        .await
+        .map_err(|e| format!("Connexion impossible : {e}"))?;
+    if !resp.status().is_success() {
+        return Err(api_error(resp).await);
+    }
+    let is_json = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|t| t.contains("json"));
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    if !is_json {
+        return Ok(bytes.to_vec());
+    }
+    // Réponse JSON : audio encodé en base64 dans `audio_data`.
+    let v: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let data = v["audio_data"].as_str().or_else(|| v["audio"].as_str()).ok_or("Réponse de synthèse vocale invalide")?;
+    base64::engine::general_purpose::STANDARD.decode(data.trim()).map_err(|e| format!("Audio illisible : {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,6 +558,14 @@ mod tests {
         assert_eq!(endpoint("https://api.mistral.ai", "models"), "https://api.mistral.ai/v1/models");
         assert_eq!(endpoint("https://api.mistral.ai/", "models"), "https://api.mistral.ai/v1/models");
         assert_eq!(endpoint("http://localhost:8000/v1", "models"), "http://localhost:8000/v1/models");
+    }
+
+    #[test]
+    fn seed_parameter_depends_on_server() {
+        assert_eq!(seed_param("https://api.mistral.ai"), "random_seed");
+        assert_eq!(seed_param("https://api.mistral.ai/v1"), "random_seed");
+        assert_eq!(seed_param("http://localhost:8000"), "seed");
+        assert_eq!(seed_param("https://evilmistral.ai"), "seed");
     }
 
     #[test]

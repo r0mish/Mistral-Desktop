@@ -8,6 +8,7 @@ import { fillModelSelect, icons, toast } from "./ui";
 import { renderChrome, setOpt } from "./chrome";
 import { renderConversation } from "./thread";
 import { stop } from "./run";
+import { stopSpeech } from "./speech";
 
 // ---------------------------------------------------------------- barre latérale
 
@@ -163,7 +164,7 @@ document.querySelector(".mode-tabs")!.addEventListener("click", (e) => {
 export function setMode(mode: Kind) {
   if (state.mode === mode && !state.current) return;
   state.mode = mode;
-  newChat();
+  newChat(!state.current && !!state.draft.temporary);
 }
 
 el.convList.addEventListener("click", async (ev) => {
@@ -225,6 +226,7 @@ export async function openConversation(id: string) {
     toast("Arrêtez la génération en cours avant de changer de conversation.", true);
     return;
   }
+  stopSpeech();
   try {
     state.current = await api.loadConversation(id);
   } catch (e) {
@@ -242,11 +244,13 @@ export async function openConversation(id: string) {
 }
 
 
-export function newChat() {
+/** Nouvelle conversation ; `temporary` : rien ne sera écrit sur le disque. */
+export function newChat(temporary = false) {
   if (state.busy) {
     toast("Arrêtez la génération en cours d'abord.", true);
     return;
   }
+  stopSpeech();
   state.current = null;
   state.draft = {
     // Pas de dossier repris en silence : on le choisit explicitement (sauf projet avec dossier).
@@ -255,6 +259,7 @@ export function newChat() {
     mcp: true,
     permissionMode: state.settings.defaultPermission ?? "auto",
     projectId: state.projectFilter || undefined,
+    ...(temporary ? { temporary: true } : {}),
   };
   state.selectedModel = defaultModelFor(state.mode);
   fillModelSelect(el.modelSelect, state.selectedModel);

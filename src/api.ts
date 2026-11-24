@@ -6,6 +6,10 @@ export interface Settings {
   systemPrompt: string;
   temperature: number | null;
   maxTokens: number | null;
+  /** Échantillonnage nucleus (0–1) ; null = défaut du modèle. */
+  topP: number | null;
+  /** Graine aléatoire pour des réponses reproductibles ; null = aléatoire. */
+  randomSeed: number | null;
   theme: "system" | "light" | "dark";
   sendOnEnter: boolean;
   webSearchProvider: "mistral" | "searxng";
@@ -32,6 +36,18 @@ export interface Settings {
   transcriptionUrl: string;
   /** Termes à favoriser (un par ligne ou séparés par des virgules). */
   transcriptionVocabulary: string;
+  /** Icône dans la barre système ; fermer la fenêtre la masque au lieu de quitter. */
+  trayIcon: boolean;
+  closeToTray: boolean;
+  /** Raccourci global (« CommandOrControl+Shift+Space »), vide = aucun. */
+  globalShortcut: string;
+  /** Mémoire persistante jointe aux conversations (outil `remember`). */
+  memoryEnabled: boolean;
+  /** Lecture à voix haute (Voxtral TTS). */
+  ttsModel: string;
+  ttsVoice: string;
+  ttsSpeed: number;
+  ttsAuto: boolean;
   encryptData: boolean;
   settingsVersion?: number;
 }
@@ -112,6 +128,36 @@ export interface Conversation {
   /** Consommation hors messages (compactions), par modèle. */
   extraUsage?: Record<string, Usage>;
   projectId?: string;
+  /** Conversation temporaire : jamais écrite sur le disque, perdue en la quittant. */
+  temporary?: boolean;
+  /** Assistant utilisé à la création (consignes et modèle copiés dans la conversation). */
+  assistantId?: string;
+  /** Température propre à la conversation (assistant) ; sinon celle des réglages. */
+  temperature?: number | null;
+}
+
+export interface BackupReport {
+  conversations: number;
+  projects: number;
+  memories: number;
+  assistants: number;
+  sshHosts: number;
+  mcp: boolean;
+}
+
+export interface Memory {
+  id: string;
+  text: string;
+  createdAt: number;
+}
+
+export interface Assistant {
+  id: string;
+  name: string;
+  instructions: string;
+  /** Vide = modèle par défaut. */
+  model: string;
+  temperature: number | null;
 }
 
 export interface ConversationSummary {
@@ -190,6 +236,8 @@ export interface ToolContext {
   system?: boolean;
   /** Projet volumineux : outil search_project_files. */
   project?: string;
+  /** Mémoire persistante : outil remember. */
+  memory?: boolean;
 }
 
 export type Risk = "read" | "write" | "exec" | "mcp";
@@ -342,6 +390,13 @@ export const api = {
     channel.onmessage = onLevel;
     return invoke<void>("dictation_start", { onLevel: channel });
   },
+  backupExport: (passphrase: string) => invoke<BackupReport | null>("backup_export", { passphrase }),
+  backupImport: (passphrase: string) => invoke<BackupReport | null>("backup_import", { passphrase }),
+  listMemories: () => invoke<Memory[]>("list_memories"),
+  saveMemories: (items: Memory[]) => invoke<void>("save_memories", { items }),
+  listAssistants: () => invoke<Assistant[]>("list_assistants"),
+  saveAssistants: (items: Assistant[]) => invoke<void>("save_assistants", { items }),
+  speak: (text: string) => invoke<string>("speak", { text }),
   dictationStop: (transcribe: boolean) => invoke<{ text: string; note: string | null } | null>("dictation_stop", { transcribe }),
 
   searchConversations: (query: string) => invoke<SearchHit[]>("search_conversations", { query }),
@@ -386,6 +441,8 @@ export const api = {
       messages: ApiMessage[];
       temperature: number | null;
       maxTokens: number | null;
+      topP?: number | null;
+      randomSeed?: number | null;
       tools: ToolDef["definition"][];
       toolChoice?: "auto" | "none";
     },

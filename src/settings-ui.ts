@@ -8,6 +8,8 @@ import { applyTheme, copy, fillModelSelect, loadModels, toast } from "./ui";
 import { refreshConvs, renderSidebar } from "./sidebar";
 import { renderChrome } from "./chrome";
 import { renderWelcome } from "./thread";
+import { loadPersonal, renderPersonalTab } from "./personal-ui";
+import type { BackupReport } from "./api";
 
 // ---------------------------------------------------------------- réglages
 
@@ -18,6 +20,8 @@ const s = {
   system: $<HTMLTextAreaElement>("#s-system"),
   temp: $<HTMLInputElement>("#s-temp"),
   max: $<HTMLInputElement>("#s-max"),
+  topP: $<HTMLInputElement>("#s-top-p"),
+  seed: $<HTMLInputElement>("#s-seed"),
   theme: $<HTMLSelectElement>("#s-theme"),
   enter: $<HTMLInputElement>("#s-enter"),
   base: $<HTMLInputElement>("#s-base"),
@@ -50,6 +54,14 @@ const s = {
   sttLang: $<HTMLSelectElement>("#s-stt-lang"),
   sttUrl: $<HTMLInputElement>("#s-stt-url"),
   sttVocab: $<HTMLTextAreaElement>("#s-stt-vocab"),
+  ttsVoice: $<HTMLInputElement>("#s-tts-voice"),
+  ttsSpeed: $<HTMLSelectElement>("#s-tts-speed"),
+  ttsModel: $<HTMLInputElement>("#s-tts-model"),
+  ttsAuto: $<HTMLInputElement>("#s-tts-auto"),
+  memory: $<HTMLInputElement>("#s-memory"),
+  tray: $<HTMLInputElement>("#s-tray"),
+  closeTray: $<HTMLInputElement>("#s-close-tray"),
+  shortcut: $<HTMLInputElement>("#s-shortcut"),
   encrypt: $<HTMLInputElement>("#s-encrypt"),
   vaultStatus: $("#vault-status"),
   vaultKeyRow: $("#vault-key-row"),
@@ -241,6 +253,8 @@ s.vaultKeyAction.addEventListener("click", async () => {
   try {
     await api.vaultImportKey(s.vaultKey.value);
     s.vaultKeyRow.hidden = true;
+  bk.pass.value = bk.pass2.value = "";
+  bk.status.textContent = "";
     toast("Clé restaurée");
     await refreshConvs();
     await loadProjects();
@@ -260,6 +274,8 @@ export async function openSettings(tab = "general") {
   s.system.value = st.systemPrompt;
   s.temp.value = st.temperature?.toString() ?? "";
   s.max.value = st.maxTokens?.toString() ?? "";
+  s.topP.value = st.topP?.toString() ?? "";
+  s.seed.value = st.randomSeed?.toString() ?? "";
   s.theme.value = st.theme;
   s.enter.checked = st.sendOnEnter;
   s.base.value = st.baseUrl;
@@ -280,6 +296,17 @@ export async function openSettings(tab = "general") {
   s.sttLang.value = st.transcriptionLanguage ?? "fr";
   s.sttUrl.value = st.transcriptionUrl ?? "";
   s.sttVocab.value = st.transcriptionVocabulary ?? "";
+  s.ttsVoice.value = st.ttsVoice ?? "";
+  s.ttsSpeed.value = String(st.ttsSpeed || 1);
+  if (!s.ttsSpeed.value) s.ttsSpeed.value = "1";
+  s.ttsModel.value = st.ttsModel ?? "";
+  s.ttsAuto.checked = !!st.ttsAuto;
+  s.memory.checked = !!st.memoryEnabled;
+  s.tray.checked = st.trayIcon !== false;
+  s.closeTray.checked = !!st.closeToTray;
+  s.closeTray.disabled = !s.tray.checked;
+  s.shortcut.value = st.globalShortcut ?? "";
+  renderPersonalTab();
   s.encrypt.checked = st.encryptData !== false;
   s.vaultKeyRow.hidden = true;
   renderVaultStatus();
@@ -319,6 +346,69 @@ $("#delete-key").addEventListener("click", async () => {
   if (!state.current) renderWelcome();
 });
 
+// ---------------------------------------------------------------- sauvegarde
+
+const bk = {
+  pass: $<HTMLInputElement>("#bk-pass"),
+  pass2: $<HTMLInputElement>("#bk-pass2"),
+  exp: $<HTMLButtonElement>("#bk-export"),
+  imp: $<HTMLButtonElement>("#bk-import"),
+  status: $("#bk-status"),
+};
+
+const reportText = (r: BackupReport) =>
+  [
+    `${r.conversations} conversation${r.conversations > 1 ? "s" : ""}`,
+    `${r.projects} projet${r.projects > 1 ? "s" : ""}`,
+    `${r.memories} souvenir${r.memories > 1 ? "s" : ""}`,
+    `${r.assistants} assistant${r.assistants > 1 ? "s" : ""}`,
+    `${r.sshHosts} serveur${r.sshHosts > 1 ? "s" : ""} SSH`,
+    r.mcp ? "configuration MCP" : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+async function backupAction(kind: "export" | "import") {
+  const pass = bk.pass.value;
+  if (pass.length < 12) return toast("Phrase de passe : 12 caractères minimum.", true);
+  if (kind === "export" && pass !== bk.pass2.value) return toast("Les deux phrases de passe ne correspondent pas.", true);
+  bk.exp.disabled = bk.imp.disabled = true;
+  bk.status.textContent = kind === "export" ? "Chiffrement…" : "Déchiffrement…";
+  try {
+    const r = kind === "export" ? await api.backupExport(pass) : await api.backupImport(pass);
+    if (!r) {
+      bk.status.textContent = "";
+      return;
+    }
+    if (kind === "export") {
+      bk.status.textContent = `Exporté : ${reportText(r)}`;
+      toast("Sauvegarde chiffrée enregistrée");
+    } else {
+      bk.status.textContent = `Restauré : ${reportText(r)}`;
+      toast("Sauvegarde restaurée");
+      await refreshConvs();
+      await loadProjects();
+      await loadPersonal();
+      renderPersonalTab();
+      renderSidebar();
+    }
+    bk.pass.value = bk.pass2.value = "";
+  } catch (e) {
+    bk.status.textContent = "";
+    toast(errMsg(e), true);
+  } finally {
+    bk.exp.disabled = bk.imp.disabled = false;
+  }
+}
+bk.exp.addEventListener("click", () => backupAction("export"));
+bk.imp.addEventListener("click", () => backupAction("import"));
+
+s.tray.addEventListener("change", () => (s.closeTray.disabled = !s.tray.checked));
+$("#s-shortcut-suggest").addEventListener("click", () => {
+  s.shortcut.value = "CommandOrControl+Shift+Space";
+  s.shortcut.focus();
+});
+
 $("#settings-cancel").addEventListener("click", () => el.settings.close());
 s.theme.addEventListener("change", () => applyTheme(s.theme.value as Settings["theme"]));
 el.settings.addEventListener("close", () => applyTheme(state.settings.theme));
@@ -333,6 +423,8 @@ $("#settings-form").addEventListener("submit", async (e) => {
     systemPrompt: s.system.value,
     temperature: num(s.temp.value),
     maxTokens: num(s.max.value),
+    topP: num(s.topP.value),
+    randomSeed: num(s.seed.value),
     theme: s.theme.value as Settings["theme"],
     sendOnEnter: s.enter.checked,
     webSearchProvider: s.webProvider.value as Settings["webSearchProvider"],
@@ -352,6 +444,14 @@ $("#settings-form").addEventListener("submit", async (e) => {
     transcriptionLanguage: s.sttLang.value,
     transcriptionUrl: s.sttUrl.value.trim(),
     transcriptionVocabulary: s.sttVocab.value,
+    ttsVoice: s.ttsVoice.value.trim() || "fr_marie_neutral",
+    ttsSpeed: Number(s.ttsSpeed.value) || 1,
+    ttsModel: s.ttsModel.value.trim() || "voxtral-mini-tts-3-0",
+    ttsAuto: s.ttsAuto.checked,
+    memoryEnabled: s.memory.checked,
+    trayIcon: s.tray.checked,
+    closeToTray: s.tray.checked && s.closeTray.checked,
+    globalShortcut: s.shortcut.value.trim(),
     encryptData: s.encrypt.checked,
   };
   try {
@@ -360,6 +460,16 @@ $("#settings-form").addEventListener("submit", async (e) => {
     s.error.textContent = errMsg(err);
     s.error.hidden = false;
     return showTab("usage");
+  }
+  if (next.topP !== null && !(next.topP > 0 && next.topP <= 1)) {
+    s.error.textContent = "Top P doit être compris entre 0 (exclu) et 1.";
+    s.error.hidden = false;
+    return showTab("general");
+  }
+  if (next.randomSeed !== null && !(Number.isInteger(next.randomSeed) && next.randomSeed >= 0)) {
+    s.error.textContent = "La graine doit être un entier positif.";
+    s.error.hidden = false;
+    return showTab("general");
   }
   if (next.webSearchProvider === "searxng" && !/^https?:\/\//.test(next.searxngUrl)) {
     s.error.textContent = "Indiquez l'URL de votre instance SearXNG (onglet Outils).";

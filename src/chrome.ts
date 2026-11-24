@@ -10,6 +10,7 @@ import { copy, icons, toast } from "./ui";
 import { newChat, projectOptions } from "./sidebar";
 import { renderConversation, renderWelcome } from "./thread";
 import { renderActivity, renderUsage, saveCurrent } from "./run";
+import { renderAssistantPicker } from "./personal-ui";
 
 // ---------------------------------------------------------------- options de la conversation
 
@@ -31,7 +32,17 @@ export function renderChrome() {
   const c = state.current;
   const o = opts();
   el.title.textContent = c?.title ?? (o.kind === "code" ? "Nouvelle session de code" : "Nouvelle conversation");
-  el.exportBtn.hidden = !c;
+  el.exportBtn.hidden = !c || !!c.temporary;
+  renderAssistantPicker();
+  el.tempBadge.hidden = !o.temporary;
+  // La bascule ne s'utilise qu'avant le premier message : une conversation ne change pas de nature.
+  el.tempToggle.hidden = !!c && !c.temporary;
+  el.tempToggle.disabled = !!c;
+  el.tempToggle.classList.toggle("on", o.temporary);
+  el.disclaimer.textContent = o.temporary
+    ? "Conversation temporaire : rien n'est enregistré sur cet appareil, elle disparaît dès que vous la quittez."
+    : "Les réponses peuvent contenir des erreurs. Conversations stockées uniquement sur cet appareil.";
+  el.app.classList.toggle("temporary", o.temporary);
   el.wsChip.hidden = o.kind !== "code" || !o.workspace;
   if (o.workspace) {
     const l = workspaceLabel(o.workspace);
@@ -68,6 +79,10 @@ export function renderChrome() {
 }
 
 el.webToggle.addEventListener("click", () => setOpt("webSearch", !opts().webSearch));
+el.tempToggle.addEventListener("click", () => {
+  if (state.current) return;
+  setOpt("temporary", !state.draft.temporary);
+});
 el.mcpToggle.addEventListener("click", () => setOpt("mcp", !opts().mcp));
 el.sysToggle.addEventListener("click", () => {
   const on = !opts().systemAccess;

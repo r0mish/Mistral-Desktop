@@ -126,6 +126,10 @@ Configuration au **format de Claude Desktop** (Réglages → MCP) :
 - **Consommation** : tokens et coût estimé par conversation, historique par jour et par modèle (Réglages → Utilisation), tarifs modifiables
 - **Mises à jour** : détection des nouvelles releases GitHub (désactivable). Bouton **« Installer et redémarrer »** : la mise à jour est téléchargée, sa **signature vérifiée** (clé publique intégrée à l'application, protection contre les retours à une version antérieure) puis installée. Sous Linux, uniquement pour l'AppImage ; les paquets `.deb`/`.rpm` se mettent à jour avec le gestionnaire de paquets
 
+### Intégration au bureau
+- **Icône dans la barre système** : nouvelle conversation, conversation temporaire, quitter ; option pour garder l'application ouverte quand on ferme la fenêtre
+- **Raccourci global** (désactivé par défaut, ex. `Ctrl+Maj+Espace`) : ouvre une nouvelle conversation depuis n'importe quelle application (Réglages → Général → Bureau ; non disponible sous Wayland)
+
 ### Raccourcis
 `Ctrl/⌘+N` nouvelle conversation · `Ctrl/⌘+Maj+N` conversation temporaire · `Ctrl/⌘+1` / `2` Chat / Code · `Ctrl/⌘+K` recherche · `Ctrl/⌘+B` barre latérale · `Ctrl/⌘+,` réglages · `Ctrl/⌘+G` panneau Git · `Ctrl/⌘+Maj+D` dictée · `Échap` arrêter
 

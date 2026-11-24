@@ -1,5 +1,6 @@
 mod askpass;
 mod audio;
+mod desktop;
 mod git;
 mod mcp;
 mod mistral;
@@ -124,7 +125,14 @@ fn save_settings(app: AppHandle, settings: Settings) -> CmdResult<()> {
             Err(e) => *vault::LAST_ERROR.lock().unwrap() = Some(e),
         }
     }
-    storage::save_settings(&app, &settings)
+    desktop::parse_shortcut(&settings.global_shortcut)?;
+    let shortcut_changed = storage::load_settings(&app).map(|s| s.global_shortcut != settings.global_shortcut).unwrap_or(true);
+    storage::save_settings(&app, &settings)?;
+    desktop::set_tray_visible(&app, settings.tray_icon);
+    if shortcut_changed {
+        desktop::apply_shortcut(&app, &settings.global_shortcut)?;
+    }
+    Ok(())
 }
 
 /// Active le chiffrement puis chiffre les fichiers existants. Ne crée jamais de nouvelle clé
@@ -775,6 +783,7 @@ pub fn run() {
     let app = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(Streams::default())
         .manage(Dictation::default())
         .manage(Arc::new(McpManager::default()))
@@ -789,6 +798,13 @@ pub fn run() {
                 }
             }
             askpass::start(app.handle().clone());
+            let settings = storage::load_settings(app.handle()).unwrap_or_default();
+            if let Err(e) = desktop::create_tray(app.handle(), settings.tray_icon) {
+                eprintln!("barre système indisponible : {e}");
+            }
+            if let Err(e) = desktop::apply_shortcut(app.handle(), &settings.global_shortcut) {
+                eprintln!("{e}");
+            }
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mgr = handle.state::<Arc<McpManager>>().inner().clone();
@@ -874,6 +890,20 @@ pub fn run() {
         .expect("erreur au lancement de l'application");
 
     app.run(|handle, event| {
+        // Fermeture de la fenêtre : masquée dans la barre système si l'option est active.
+        if let tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::CloseRequested { api, .. }, .. } = &event {
+            if label == "main" && desktop::hide_on_close(handle) {
+                api.prevent_close();
+                if let Some(w) = handle.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            }
+        }
+        // macOS : clic sur l'icône du Dock alors que la fenêtre est masquée.
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = event {
+            desktop::show_main(handle);
+        }
         if let tauri::RunEvent::Exit = event {
             // Arrêt propre des serveurs MCP (processus enfants).
             let mgr = handle.state::<Arc<McpManager>>().inner().clone();

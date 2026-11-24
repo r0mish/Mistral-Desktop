@@ -36,6 +36,11 @@ export interface Settings {
   transcriptionUrl: string;
   /** Termes à favoriser (un par ligne ou séparés par des virgules). */
   transcriptionVocabulary: string;
+  /** Icône dans la barre système ; fermer la fenêtre la masque au lieu de quitter. */
+  trayIcon: boolean;
+  closeToTray: boolean;
+  /** Raccourci global (« CommandOrControl+Shift+Space »), vide = aucun. */
+  globalShortcut: string;
   /** Mémoire persistante jointe aux conversations (outil `remember`). */
   memoryEnabled: boolean;
   /** Lecture à voix haute (Voxtral TTS). */

@@ -211,6 +211,19 @@
           </fieldset>
 
           <fieldset>
+            <legend>Bureau</legend>
+            <label class="check"><input id="s-tray" type="checkbox" /> Icône dans la barre système (nouvelle conversation, conversation temporaire, quitter)</label>
+            <label class="check"><input id="s-close-tray" type="checkbox" /> Fermer la fenêtre la garde ouverte dans la barre système</label>
+            <label>Raccourci global (ouvre une nouvelle conversation depuis n'importe quelle application)
+              <span class="row">
+                <input id="s-shortcut" placeholder="aucun ; ex. CommandOrControl+Shift+Space" spellcheck="false" />
+                <button type="button" id="s-shortcut-suggest" class="btn-ghost sm">Suggestion</button>
+              </span>
+            </label>
+            <p class="muted small">Format : modificateurs (<code>CommandOrControl</code>, <code>Shift</code>, <code>Alt</code>) + touche, séparés par « + ». Sous Linux, l'icône nécessite un bureau compatible AppIndicator (sous GNOME : extension « AppIndicator ») ; laissez alors la fermeture vers la barre système désactivée. Les raccourcis globaux ne fonctionnent pas dans une session Wayland.</p>
+          </fieldset>
+
+          <fieldset>
             <legend>Chiffrement des données</legend>
             <label class="check"><input id="s-encrypt" type="checkbox" /> Chiffrer les conversations, projets et la configuration MCP sur cet appareil</label>
             <p class="muted small" id="vault-status"></p>

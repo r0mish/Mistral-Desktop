@@ -1,6 +1,7 @@
 import "highlight.js/styles/github-dark.css";
 import "./styles.css";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
 import { today } from "./usage";
 import { initSshUi, loadHosts } from "./ssh-ui";
@@ -121,5 +122,12 @@ async function init() {
   renderUsage();
   await initUpdates();
 }
+
+// Barre système et raccourci global : nouvelle conversation (temporaire ou non), prête à écrire.
+listen<string>("desktop-action", (e) => {
+  if (state.busy) return el.input.focus();
+  if (state.settings) newChat(e.payload === "temporary");
+  el.input.focus();
+}).catch(() => {});
 
 init();

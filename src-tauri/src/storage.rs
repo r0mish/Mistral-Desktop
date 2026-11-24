@@ -58,6 +58,10 @@ pub struct Settings {
     pub transcription_url: String,
     /// Termes à favoriser par la transcription (un par ligne ou séparés par des virgules).
     pub transcription_vocabulary: String,
+    /// Icône dans la barre système, fermeture vers la barre système et raccourci global (vide = aucun).
+    pub tray_icon: bool,
+    pub close_to_tray: bool,
+    pub global_shortcut: String,
     /// Mémoire persistante : faits retenus joints aux conversations, outil `remember` pour le modèle.
     pub memory_enabled: bool,
     /// Lecture à voix haute (Voxtral TTS) : modèle, voix et vitesse de lecture locale.
@@ -149,6 +153,9 @@ impl Default for Settings {
             transcription_language: "fr".into(),
             transcription_url: String::new(),
             transcription_vocabulary: String::new(),
+            tray_icon: true,
+            close_to_tray: false,
+            global_shortcut: String::new(),
             memory_enabled: false,
             tts_model: crate::mistral::TTS_MODEL.into(),
             tts_voice: crate::mistral::TTS_VOICE.into(),

@@ -58,6 +58,9 @@ const s = {
   ttsModel: $<HTMLInputElement>("#s-tts-model"),
   ttsAuto: $<HTMLInputElement>("#s-tts-auto"),
   memory: $<HTMLInputElement>("#s-memory"),
+  tray: $<HTMLInputElement>("#s-tray"),
+  closeTray: $<HTMLInputElement>("#s-close-tray"),
+  shortcut: $<HTMLInputElement>("#s-shortcut"),
   encrypt: $<HTMLInputElement>("#s-encrypt"),
   vaultStatus: $("#vault-status"),
   vaultKeyRow: $("#vault-key-row"),
@@ -296,6 +299,10 @@ export async function openSettings(tab = "general") {
   s.ttsModel.value = st.ttsModel ?? "";
   s.ttsAuto.checked = !!st.ttsAuto;
   s.memory.checked = !!st.memoryEnabled;
+  s.tray.checked = st.trayIcon !== false;
+  s.closeTray.checked = !!st.closeToTray;
+  s.closeTray.disabled = !s.tray.checked;
+  s.shortcut.value = st.globalShortcut ?? "";
   renderPersonalTab();
   s.encrypt.checked = st.encryptData !== false;
   s.vaultKeyRow.hidden = true;
@@ -334,6 +341,12 @@ $("#delete-key").addEventListener("click", async () => {
   await api.deleteKey().catch((e) => toast(errMsg(e), true));
   await refreshKeyStatus();
   if (!state.current) renderWelcome();
+});
+
+s.tray.addEventListener("change", () => (s.closeTray.disabled = !s.tray.checked));
+$("#s-shortcut-suggest").addEventListener("click", () => {
+  s.shortcut.value = "CommandOrControl+Shift+Space";
+  s.shortcut.focus();
 });
 
 $("#settings-cancel").addEventListener("click", () => el.settings.close());
@@ -376,6 +389,9 @@ $("#settings-form").addEventListener("submit", async (e) => {
     ttsModel: s.ttsModel.value.trim() || "voxtral-mini-tts-3-0",
     ttsAuto: s.ttsAuto.checked,
     memoryEnabled: s.memory.checked,
+    trayIcon: s.tray.checked,
+    closeToTray: s.tray.checked && s.closeTray.checked,
+    globalShortcut: s.shortcut.value.trim(),
     encryptData: s.encrypt.checked,
   };
   try {

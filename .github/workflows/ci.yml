@@ -37,6 +37,33 @@ jobs:
       - run: cargo test
         working-directory: src-tauri
 
+  # Paquet .deb ARM64 construit sur un runner ARM natif, téléchargeable depuis le résumé du run.
+  deb-arm64:
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - name: Dépendances système
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libasound2-dev
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - run: cargo test
+        working-directory: src-tauri
+      - run: npx tauri build --bundles deb
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mistral-desktop-arm64-deb
+          path: src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: error
+
   # Application réelle (Rust + WebView) pilotée par WebDriver contre un faux serveur Mistral,
   # et SSH par mot de passe / code 2FA contre de vrais sshd locaux (machine jetable du CI).
   e2e:

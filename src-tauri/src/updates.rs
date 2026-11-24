@@ -33,15 +33,22 @@ fn preferred_assets() -> Vec<&'static str> {
         ("macos", "aarch64") => vec!["_aarch64.dmg"],
         ("macos", _) => vec!["_x64.dmg"],
         ("windows", _) => vec!["-setup.exe", ".msi"],
-        _ => {
-            if std::env::var_os("APPIMAGE").is_some() {
-                vec![".AppImage"]
-            } else if std::path::Path::new("/etc/debian_version").exists() {
-                vec![".deb", ".AppImage"]
-            } else if std::path::Path::new("/etc/redhat-release").exists() || std::path::Path::new("/etc/fedora-release").exists() {
-                vec![".rpm", ".AppImage"]
+        (_, arch) => {
+            // Noms des paquets Tauri : _amd64.deb / _arm64.deb, .x86_64.rpm / .aarch64.rpm,
+            // _amd64.AppImage / _aarch64.AppImage. Jamais de paquet d'une autre architecture.
+            let (deb, rpm, appimage) = if arch == "aarch64" {
+                ("_arm64.deb", ".aarch64.rpm", "_aarch64.AppImage")
             } else {
-                vec![".AppImage"]
+                ("_amd64.deb", ".x86_64.rpm", "_amd64.AppImage")
+            };
+            if std::env::var_os("APPIMAGE").is_some() {
+                vec![appimage]
+            } else if std::path::Path::new("/etc/debian_version").exists() {
+                vec![deb, appimage]
+            } else if std::path::Path::new("/etc/redhat-release").exists() || std::path::Path::new("/etc/fedora-release").exists() {
+                vec![rpm, appimage]
+            } else {
+                vec![appimage]
             }
         }
     }

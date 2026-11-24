@@ -165,7 +165,9 @@ Les releases suivantes publient alors les paquets signés et `latest.json`. Sans
 
 ### Binaires
 
-Téléchargez l'installateur de votre système dans les [Releases](https://github.com/r0mish/Mistral-Desktop/releases) : `.dmg` (macOS Apple Silicon et Intel), `.exe`/`.msi` (Windows), `.deb`, `.rpm` et `.AppImage` (Linux).
+Téléchargez l'installateur de votre système dans les [Releases](https://github.com/r0mish/Mistral-Desktop/releases) : `.dmg` (macOS Apple Silicon et Intel), `.exe`/`.msi` (Windows), `.deb`, `.rpm` et `.AppImage` (Linux x86_64), `_arm64.deb` (Debian/Ubuntu ARM64 : Raspberry Pi 4/5 sous Raspberry Pi OS 64 bits, serveurs ARM…).
+
+Le paquet ARM64 est construit sur un runner ARM natif de GitHub Actions ; il nécessite une distribution avec WebKitGTK 4.1 (Debian 12+, Ubuntu 22.04+, Raspberry Pi OS Bookworm+).
 
 Une nouvelle release est construite et publiée automatiquement pour tous les systèmes dès qu'une version encore jamais publiée (`version` dans `src-tauri/tauri.conf.json`) arrive sur `main` : pour sortir une version, il suffit d'incrémenter ce numéro. Elle peut aussi être lancée à la main : Actions → Release → Run workflow.
 

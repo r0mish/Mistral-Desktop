@@ -4,6 +4,8 @@ import { createServer } from "node:http";
 
 /** Requêtes reçues, pour les vérifications des tests. */
 export const requests = [];
+/** Requêtes de synthèse vocale reçues. */
+export const speechRequests = [];
 
 const MODELS = ["mistral-medium-latest", "devstral-medium-latest", "modele-e2e-latest"];
 
@@ -26,6 +28,15 @@ function script(req) {
   }
   if (ask.includes("CONSIGNES")) {
     return { content: system.includes("RÈGLE-E2E-42") ? "Consignes reçues : RÈGLE-E2E-42" : "Consignes absentes" };
+  }
+  if (ask.includes("SOUVIENS")) {
+    return { toolCalls: [{ name: "remember", arguments: { fact: "L'utilisateur préfère le thé vert." } }] };
+  }
+  if (ask.includes("MÉMOIRE")) {
+    return { content: system.includes("ZÈBRE-42") ? "Mémoire reçue : ZÈBRE-42" : "Mémoire absente" };
+  }
+  if (ask.includes("ASSISTANT")) {
+    return { content: system.includes("CONSIGNE-ASSISTANT-E2E") ? "Assistant reçu : CONSIGNE-ASSISTANT-E2E" : "Assistant absent" };
   }
   if (ask.includes("PROJET")) {
     return { content: system.includes("CONSIGNE-PROJET-E2E") ? "Projet reçu : CONSIGNE-PROJET-E2E" : "Projet absent" };
@@ -76,6 +87,13 @@ export function startMock(port = 0) {
         const parsed = JSON.parse(body);
         requests.push({ auth: req.headers.authorization, ...parsed });
         return chat(parsed, res);
+      }
+      if (req.method === "POST" && req.url === "/v1/audio/speech") {
+        speechRequests.push({ auth: req.headers.authorization, ...JSON.parse(body) });
+        // Trame MP3 muette minimale (MPEG-1 Layer III, 128 kbit/s, 44,1 kHz).
+        const frame = Buffer.alloc(417);
+        frame.set([0xff, 0xfb, 0x90, 0x64]);
+        return json(200, { audio_data: Buffer.concat(Array(20).fill(frame)).toString("base64") });
       }
       if (req.method === "POST" && req.url === "/v1/audio/transcriptions") {
         return json(200, { text: "Dictée simulée", language: "fr" });

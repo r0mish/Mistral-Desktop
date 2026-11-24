@@ -41,7 +41,7 @@ pub struct ChatRequest {
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
     #[serde(default)]
-    pub top_p: Option<f32>,
+    pub top_p: Option<f64>,
     #[serde(default)]
     pub random_seed: Option<u64>,
     /// Définitions d'outils au format Mistral (`[{type: "function", function: {...}}]`).

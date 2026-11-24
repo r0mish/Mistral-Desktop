@@ -21,7 +21,7 @@ pub struct Settings {
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
     /// Échantillonnage nucleus (0–1) ; absent = défaut du modèle.
-    pub top_p: Option<f32>,
+    pub top_p: Option<f64>,
     /// Graine aléatoire (réponses reproductibles) ; absent = aléatoire.
     pub random_seed: Option<u64>,
     pub theme: String,
